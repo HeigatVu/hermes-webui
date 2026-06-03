@@ -73,6 +73,7 @@ _ALLOWED_WORKDIR_ROOTS = [
     Path("/workspace").resolve(),
     Path("/aiOS-ui").resolve(),
     Path("/tmp").resolve(),
+    Path("/outputs").resolve(),
 ]
 
 
@@ -906,16 +907,42 @@ async def files_permissions_set(request: Request):
     perms[abs_path] = level
     _save_ai_permissions(perms)
 
-    # ── Apply filesystem mode ──
-    # Best-effort: file might not exist or we might not own it.
+    # ── Apply filesystem mode and ownership directly (backend runs as root) ──
     mode_octal = _PERMISSION_MODES[level][entry_type]
-    try:
-        if target.exists():
-            os.chmod(target, int(mode_octal, 8))
-    except (PermissionError, OSError):
-        pass
+    chmod_error = None
+    chmod_applied = False
 
-    return {"path": abs_path, "level": level, "mode": mode_octal}
+    if not target.exists():
+        chmod_error = "target does not exist"
+    else:
+        try:
+            # Change file/folder ownership to root or ai_user based on permission level:
+            # - rw (read-write): owned by ai_user (UID 2000, GID 2000 by default)
+            # - ro (read-only) or none (hidden): owned by root (UID 0, GID 0)
+            import shutil
+            target_uid = int(os.environ.get("USER_ID", "2000"))
+            target_gid = int(os.environ.get("GROUP_ID", "2000"))
+
+            if level == "rw":
+                shutil.chown(target, user=target_uid, group=target_gid)
+            else:
+                shutil.chown(target, user=0, group=0)
+
+            # Change filesystem permission mode
+            os.chmod(target, int(mode_octal, 8))
+            applied_mode = oct(target.stat().st_mode)[-3:]
+            if applied_mode == mode_octal:
+                chmod_applied = True
+            else:
+                chmod_error = f"chmod succeeded but mode is {applied_mode}, expected {mode_octal}"
+        except OSError as e:
+            chmod_error = str(e)
+
+    return {
+        "path": abs_path, "level": level, "mode": mode_octal,
+        "chmod_applied": chmod_applied,
+        "chmod_error": chmod_error,
+    }
 
 
 @app.post("/api/files/permissions/remove")
