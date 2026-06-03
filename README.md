@@ -112,9 +112,17 @@ ecosystem. See [docs/why-hermes.md](docs/why-hermes.md) for the full side-by-sid
 Run the repo bootstrap:
 
 ```bash
-git clone https://github.com/nesquena/hermes-webui.git hermes-webui
-cd hermes-webui
-python3 bootstrap.py
+# Copy env template
+cp .env.example .env
+
+# Run via Docker (recommended)
+docker compose up -d
+# Sidecar UI: http://localhost:9001
+# Upstream UI: http://localhost:8787
+
+# Or run locally (BFF defaults to port 8501)
+python main.py
+# UI: http://localhost:8501
 ```
 
 Or keep using the shell launcher:
@@ -534,6 +542,16 @@ and vanilla JS. The backend lives in `api/`, the frontend in `static/`.
 **Backend (`api/`)**
 
 ```
+Browser / External agent
+        │
+  FastAPI (main.py)       ← port 8501 (9001 on host via Docker)
+        │ reverse proxy
+  hermes-webui (server.py) ← 127.0.0.1:8787
+        │
+  Hermes Agent CLI
+
+---
+
 server.py         HTTP routing shell + auth middleware
 api/
   auth.py         Optional password authentication, signed cookies, passkeys
@@ -594,6 +612,16 @@ The WebUI is still coupled to Hermes Agent internals for runtime execution, prov
 - Record the full `hermes-agent` + `hermes-webui` versions in issue reports when upgrade mismatches are suspected.
 
 **Docker users**: pin both image tags (or corresponding pinned source revisions) rather than using `latest` on one side and a fixed tag on the other. When upgrading the multi-container setup, follow the agent-image upgrade procedure in [`docs/docker.md`](docs/docker.md) (which requires dropping the `hermes-agent-src` volume before recreating). The current source-boundary status is tracked in [`docs/rfcs/agent-source-boundary.md`](docs/rfcs/agent-source-boundary.md).
+
+---
+
+## Custom Features
+
+*Features and modules built specifically for this sidecar repository:*
+
+- **AI Permissions Boundary System**: An API and configuration mapping under `/tmp/aios-permissions.json` allowing host-level restriction of workspace directory access for inside-container AI agents (`rw`, `ro`, `none` levels).
+- **Interactive File Browser SPA**: Served at `/files` (HTML in `static/file-browser/index.html`), supporting CRUD operations, file previews, logs tailing, permissions management, and dynamic `chmod` adjustments.
+- **FastAPI BFF Wrapper**: Handles downstream subprocess lifecycle management (starts the upstream server safely, manages connection pools, strips content encodings safely, and handles SSE stream formatting).
 
 ---
 
