@@ -86,10 +86,6 @@ docs/ui-ux/review-shots/
 # Runtime cache
 cache/
 
-# Local static assets / file browser build
-static/file-browser/
-
 # Local custom files / drafts
-main.py
 SCHEDULE_FEATURE_DRAFT.md
 >>>>>>> 3928bd40 (Configure local ignores and settings)
