@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Files — aiOS</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#242424;--sidebar-bg:#1e1e1e;--surface:#2e2e2e;--surface2:#383838;
+  --border:#4a4a4a;--border2:#3a3a3a;
+  --text:#ffffff;--muted:#9a9996;--muted2:#6b6b6b;
+  --accent:#3584e4;--accent-light:rgba(53,132,228,0.22);
+  --folder:#f4b843;--green:#57e389;--red:#ff7676;--yellow:#f4b843;
+  --radius:8px;--radius-sm:5px;--radius-md:10px;
+  font-family:-apple-system,'Cantarell','Helvetica Neue',system-ui,sans-serif;
+  font-size:14px;line-height:1.5;
+  background:var(--bg);color:var(--text);
+}
+body{display:flex;flex-direction:column;height:100vh;overflow:hidden;user-select:none}
+
+/* ── Header Bar ── */
+.headerbar{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 10px;background:var(--sidebar-bg);
+  border-bottom:1px solid var(--border2);min-height:48px;flex-shrink:0;
+}
+.hb-btn{
+  background:var(--surface);border:none;color:var(--text);
+  width:32px;height:32px;border-radius:var(--radius-sm);cursor:pointer;
+  font-size:16px;display:flex;align-items:center;justify-content:center;
+  transition:background .12s;flex-shrink:0;
+}
+.hb-btn:hover{background:var(--surface2)}
+.hb-btn:disabled{opacity:0.35;cursor:default}
+.hb-btn.active{background:var(--accent);color:#fff}
+.hb-sep{width:1px;height:24px;background:var(--border2);margin:0 2px;flex-shrink:0}
+.breadcrumb{
+  flex:1;display:flex;align-items:center;gap:2px;
+  background:var(--surface);padding:5px 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--border2);overflow-x:auto;white-space:nowrap;
+  font-size:13px;min-width:0;
+}
+.breadcrumb::-webkit-scrollbar{display:none}
+.breadcrumb .seg{color:var(--muted);cursor:pointer;padding:0 3px;border-radius:3px}
+.breadcrumb .seg:hover{color:var(--text);background:var(--surface2)}
+.breadcrumb .seg.last{color:var(--text);cursor:default;font-weight:500}
+.breadcrumb .sep{color:var(--muted2);font-size:11px;margin:0 1px}
+.view-toggle{display:flex;background:var(--surface);border-radius:var(--radius-sm);overflow:hidden;gap:0}
+.view-toggle .hb-btn{width:30px;height:30px;border-radius:0;font-size:14px;background:transparent}
+.view-toggle .hb-btn.active{background:var(--accent);color:#fff}
+
+/* ── Main Layout ── */
+.main{display:flex;flex:1;overflow:hidden}
+
+/* ── Sidebar ── */
+.sidebar{
+  width:200px;background:var(--sidebar-bg);
+  border-right:1px solid var(--border2);overflow-y:auto;
+  padding:6px 0;flex-shrink:0;
+}
+.sidebar::-webkit-scrollbar{width:6px}
+.sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.sidebar-section{
+  font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.9px;color:var(--muted2);padding:10px 14px 3px;
+}
+.sidebar-item{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 14px;cursor:pointer;font-size:13px;
+  color:var(--muted);transition:background .1s;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sidebar-item:hover{background:var(--surface);color:var(--text)}
+.sidebar-item.active{background:var(--accent-light);color:var(--accent)}
+.sidebar-item .si-icon{font-size:15px;flex-shrink:0;width:18px;text-align:center}
+
+/* ── File Area ── */
+.filearea{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+/* LIST VIEW */
+.list-view{flex:1;overflow-y:auto;padding:0}
+.list-view::-webkit-scrollbar{width:8px}
+.list-view::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.list-view table{width:100%;border-collapse:collapse}
+.list-view th{
+  text-align:left;padding:6px 12px;font-size:11px;font-weight:600;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.6px;
+  border-bottom:1px solid var(--border2);
+  background:var(--sidebar-bg);position:sticky;top:0;z-index:2;cursor:pointer;
+}
+.list-view th:hover{color:var(--text)}
+.list-view td{padding:5px 10px;border-bottom:1px solid var(--border2);font-size:13px}
+.list-view tr.file-row{cursor:pointer;transition:background .07s}
+.list-view tr.file-row:hover{background:var(--surface)}
+.list-view tr.file-row.selected{background:var(--accent-light)}
+.file-icon{font-size:17px;line-height:1;margin-right:7px;vertical-align:middle}
+.file-name{font-size:13px;vertical-align:middle}
+.file-name.is-dir{font-weight:500}
+.col-size{color:var(--muted);text-align:right;font-size:12px}
+.col-date{color:var(--muted);font-size:12px}
+.perm-pill{
+  display:inline-flex;align-items:center;gap:3px;
+  padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;
+  background:var(--surface2);color:var(--muted);cursor:pointer;
+}
+.perm-pill:hover{background:var(--accent-light);color:var(--accent)}
+.perm-pill.denied{background:rgba(255,118,118,.15);color:var(--red)}
+.perm-pill.world-w{background:rgba(244,184,67,.15);color:var(--yellow)}
+
+/* GRID VIEW */
+.grid-view{flex:1;overflow-y:auto;padding:12px;display:none}
+.grid-view::-webkit-scrollbar{width:8px}
+.grid-view::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.grid-cells{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:4px}
+.grid-cell{
+  display:flex;flex-direction:column;align-items:center;
+  padding:10px 6px 8px;border-radius:var(--radius);cursor:pointer;
+  transition:background .08s;
+}
+.grid-cell:hover{background:var(--surface)}
+.grid-cell.selected{background:var(--accent-light)}
+.grid-cell .gc-icon{font-size:38px;line-height:1;margin-bottom:5px}
+.grid-cell .gc-name{font-size:11px;text-align:center;word-break:break-word;
+  max-width:78px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;}
+
+/* ── Right Panel ── */
+.right-panel{
+  width:0;background:var(--sidebar-bg);border-left:1px solid var(--border2);
+  display:flex;flex-direction:row;flex-shrink:0;overflow:hidden;
+  transition:width .18s ease;
+}
+.right-panel.open{width:262px}
+.panel-resize-handle{
+  width:5px;flex-shrink:0;cursor:col-resize;background:transparent;
+  transition:background .15s;z-index:10;
+}
+.panel-resize-handle:hover,.panel-resize-handle.dragging{background:var(--accent)}
+.panel-inner{display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden}
+.panel-tabs{display:flex;border-bottom:1px solid var(--border2);flex-shrink:0}
+.panel-tab{
+  flex:1;padding:8px 4px;font-size:12px;font-weight:500;text-align:center;
+  cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;
+  transition:color .1s;white-space:nowrap;
+}
+.panel-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.panel-tab:hover:not(.active){color:var(--text)}
+.panel-content{display:none;flex:1;overflow-y:auto;flex-direction:column;overflow-x:hidden}
+.panel-content.active{display:flex}
+.panel-content::-webkit-scrollbar{width:6px}
+.panel-content::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Properties panel */
+.prop-header{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border2)}
+.prop-header .ph-icon{font-size:34px;flex-shrink:0}
+.prop-header .ph-name{font-size:13px;font-weight:600;word-break:break-all;line-height:1.3}
+.prop-header .ph-type{font-size:11px;color:var(--muted);margin-top:2px}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:10px 14px;border-bottom:1px solid var(--border2)}
+.info-cell{padding:4px 6px 4px 0}
+.info-cell .ic-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2);font-weight:600}
+.info-cell .ic-value{font-size:12px;color:var(--text);font-weight:500;word-break:break-all;margin-top:1px}
+
+/* Permissions section */
+.perm-section{padding:10px 14px;border-bottom:1px solid var(--border2)}
+.perm-title{font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.7px;color:var(--muted2);margin-bottom:8px}
+.perm-cards{display:flex;flex-direction:column;gap:6px}
+.perm-card{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 12px;border-radius:var(--radius);border:2px solid var(--border2);
+  cursor:pointer;transition:border-color .12s,background .12s;background:var(--surface);
+}
+.perm-card:hover{border-color:var(--accent);background:var(--accent-light)}
+.perm-card.current{border-color:var(--accent);background:var(--accent-light)}
+.perm-card .pc-icon{font-size:22px;flex-shrink:0}
+.perm-card .pc-body{flex:1;min-width:0}
+.perm-card .pc-label{font-size:12px;font-weight:700;color:var(--text);line-height:1.2}
+.perm-card .pc-desc{font-size:11px;color:var(--muted);margin-top:2px}
+.perm-card .pc-mode{font-size:10px;font-family:ui-monospace,monospace;color:var(--muted2);margin-top:2px}
+.perm-card .pc-tick{font-size:14px;color:var(--accent);flex-shrink:0;opacity:0}
+.perm-card.current .pc-tick{opacity:1}
+
+/* File viewer */
+.file-viewer{display:flex;flex-direction:column;flex:1;min-height:0;border-top:1px solid var(--border2)}
+.fv-toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;
+  border-bottom:1px solid var(--border2);flex-shrink:0;background:var(--sidebar-bg)}
+.fv-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fv-btn{background:none;border:none;color:var(--muted);cursor:pointer;
+  padding:2px 6px;border-radius:var(--radius-sm);font-size:11px}
+.fv-btn:hover{background:var(--surface);color:var(--text)}
+.fv-content{
+  flex:1;overflow-y:auto;overflow-x:auto;padding:10px 12px;
+  font-family:ui-monospace,'Cascadia Code',monospace;font-size:11px;
+  line-height:1.6;color:#d4d4d4;white-space:pre;background:var(--bg);
+  border:none;resize:none;outline:none;width:100%;
+}
+.fv-content::-webkit-scrollbar{width:6px;height:6px}
+.fv-content::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.fv-content.dirty{border-left:2px solid var(--yellow)}
+.fv-empty{display:flex;align-items:center;justify-content:center;flex:1;
+  color:var(--muted2);font-size:12px;text-align:center;padding:16px}
+.fv-save-btn{
+  background:var(--accent);border:none;color:#fff;cursor:pointer;
+  padding:3px 10px;border-radius:var(--radius-sm);font-size:11px;font-weight:500;
+}
+.fv-save-btn:hover{opacity:.85}
+.fv-save-btn:disabled{opacity:.4;cursor:default}
+.prop-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  flex:1;color:var(--muted);gap:8px;font-size:12px;padding:24px;text-align:center;
+}
+.prop-empty .pe-icon{font-size:36px;opacity:.3}
+
+/* Notes panel */
+.notes-body{display:flex;flex-direction:column;flex:1}
+.notes-toolbar{display:flex;align-items:center;gap:4px;padding:6px 8px;
+  border-bottom:1px solid var(--border2);flex-shrink:0}
+.notes-toolbar strong{font-size:12px;color:var(--text)}
+.nb-btn{
+  background:none;border:none;color:var(--muted);cursor:pointer;
+  padding:3px 6px;border-radius:var(--radius-sm);font-size:11px;
+}
+.nb-btn:hover{background:var(--surface);color:var(--text)}
+#notes-saved{color:var(--muted2);font-size:10px;margin-left:auto;white-space:nowrap}
+#notes-textarea{
+  flex:1;background:transparent;color:var(--text);
+  border:none;resize:none;padding:12px;font-family:inherit;font-size:13px;
+  line-height:1.6;outline:none;
+}
+
+/* ── Drag & Drop ── */
+.file-row.dragging,.grid-cell.dragging{opacity:.4}
+.file-row.drag-over td:first-child,.grid-cell.drag-over{
+  outline:2px dashed var(--accent);outline-offset:-2px;border-radius:4px;
+  background:var(--accent-light);
+}
+.sidebar-item.drag-over{background:var(--accent-light);color:var(--accent)}
+.file-row.cut-mark,.grid-cell.cut-mark{opacity:.5}
+
+/* ── Context Menu ── */
+.ctx-menu{
+  position:fixed;background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);z-index:200;min-width:165px;
+  box-shadow:0 8px 24px rgba(0,0,0,.55);padding:4px 0;
+  animation:fadein .1s;
+}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+.ctx-item{
+  padding:7px 14px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;
+}
+.ctx-item:hover{background:var(--accent-light)}
+.ctx-sep{height:1px;background:var(--border2);margin:3px 0}
+
+/* ── Edit Modal ── */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;
+  display:flex;align-items:center;justify-content:center;
+}
+.modal{
+  background:var(--surface);border-radius:var(--radius-md);border:1px solid var(--border);
+  min-width:340px;max-width:520px;width:90%;
+  box-shadow:0 16px 48px rgba(0,0,0,.65);
+  display:flex;flex-direction:column;max-height:80vh;
+}
+.modal-header{display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px 10px;border-bottom:1px solid var(--border2);flex-shrink:0}
+.modal-header h3{font-size:14px;font-weight:600}
+.modal-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:20px;padding:0 4px}
+.modal-close:hover{color:var(--text)}
+.modal-body{padding:14px;overflow-y:auto;flex:1}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;
+  padding:10px 14px 12px;border-top:1px solid var(--border2);flex-shrink:0}
+.mbtn{
+  padding:6px 16px;border-radius:var(--radius-sm);
+  font-size:13px;font-weight:500;cursor:pointer;border:none;
+}
+.mbtn.secondary{background:var(--surface2);color:var(--text)}
+.mbtn.secondary:hover{background:var(--border)}
+.mbtn.primary{background:var(--accent);color:#fff}
+.mbtn.primary:hover{opacity:.88}
+
+/* ── Status Bar ── */
+.statusbar{
+  display:flex;align-items:center;gap:10px;padding:4px 14px;
+  background:var(--sidebar-bg);border-top:1px solid var(--border2);
+  font-size:11px;color:var(--muted);min-height:26px;flex-shrink:0;
+}
+.statusbar .dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
+.statusbar .dot.off{background:var(--red)}
+
+/* ── States ── */
+.state-empty,.state-loading{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:160px;color:var(--muted);gap:10px;font-size:14px;
+}
+.state-empty .big-icon{font-size:52px;opacity:.35}
+.spin{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);
+  border-top-color:var(--accent);animation:spin .7s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- Header Bar -->
+<div class="headerbar">
+  <button class="hb-btn" id="btn-back" onclick="navBack()" title="Back (Alt+←)">&#8592;</button>
+  <button class="hb-btn" id="btn-fwd" onclick="navFwd()" title="Forward (Alt+→)">&#8594;</button>
+  <button class="hb-btn" onclick="navUp()" title="Parent folder (Alt+↑)">&#8593;</button>
+  <div class="hb-sep"></div>
+  <div class="breadcrumb" id="breadcrumb"></div>
+  <div class="hb-sep"></div>
+  <div class="view-toggle">
+    <button class="hb-btn active" id="btn-list" onclick="setView('list')" title="List view">&#9776;</button>
+    <button class="hb-btn" id="btn-grid" onclick="setView('grid')" title="Icon view">&#8862;</button>
+  </div>
+  <button class="hb-btn" id="btn-notes" onclick="toggleNotes()" title="Notes">&#128221;</button>
+  <button class="hb-btn" onclick="refreshList()" title="Reload (F5)">&#8635;</button>
+  <button class="hb-btn" id="btn-empty-trash" onclick="emptyTrash()" title="Empty Trash" style="display:none;color:var(--red)">&#128465; Empty</button>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-section">Places</div>
+    <div class="sidebar-item" onclick="navigateTo('/workspace')" data-path="/workspace">
+      <span class="si-icon">&#128196;</span> workspace
+    </div>
+    <div class="sidebar-item" onclick="navigateTo('/aiOS-ui')" data-path="/aiOS-ui">
+      <span class="si-icon">&#128187;</span> aiOS-ui
+    </div>
+    <div class="sidebar-item" onclick="navigateTo('/home/ai_user')" data-path="/home/ai_user">
+      <span class="si-icon">&#127968;</span> Home
+    </div>
+    <div class="sidebar-item" onclick="navigateTo('/config-file')" data-path="/config-file">
+      <span class="si-icon">&#9881;</span> config-file
+    </div>
+    <div class="sidebar-item" onclick="navigateTo('/home/ai_user/.trash')" data-path="/home/ai_user/.trash">
+      <span class="si-icon">&#128465;</span> Trash
+    </div>
+    <div class="sidebar-section" style="margin-top:4px">Workspace</div>
+    <div id="sidebar-quick"></div>
+  </div>
+
+  <!-- File Area -->
+  <div class="filearea" id="filearea">
+    <!-- List View -->
+    <div class="list-view" id="list-view">
+      <table>
+        <thead><tr>
+          <th style="width:46%" onclick="sortBy('name')">Name</th>
+          <th style="width:12%;text-align:right" onclick="sortBy('size')">Size</th>
+          <th style="width:24%" onclick="sortBy('modified')">Modified</th>
+          <th style="width:18%">Permissions</th>
+        </tr></thead>
+        <tbody id="list-body"></tbody>
+      </table>
+      <div class="state-empty" id="list-empty" style="display:none">
+        <div class="big-icon">&#128194;</div>
+        <div>This folder is empty</div>
+      </div>
+      <div class="state-loading" id="list-loading" style="display:none">
+        <div class="spin"></div>
+      </div>
+    </div>
+    <!-- Grid View -->
+    <div class="grid-view" id="grid-view">
+      <div class="grid-cells" id="grid-cells"></div>
+      <div class="state-empty" id="grid-empty" style="display:none">
+        <div class="big-icon">&#128194;</div>
+        <div>This folder is empty</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel" id="right-panel">
+    <div class="panel-resize-handle" id="panel-resize-handle"></div>
+    <div class="panel-inner">
+      <div class="panel-tabs">
+        <div class="panel-tab active" id="tab-props" onclick="switchTab('props')">Properties</div>
+        <div class="panel-tab" id="tab-notes" onclick="switchTab('notes')">&#128221; Notes</div>
+      </div>
+      <!-- Properties -->
+      <div class="panel-content active" id="panel-props">
+        <div class="prop-empty">
+          <div class="pe-icon">&#128196;</div>
+          <div>Select a file or folder to see its properties and manage permissions</div>
+        </div>
+      </div>
+      <!-- Notes -->
+      <div class="panel-content" id="panel-notes">
+        <div class="notes-body">
+          <div class="notes-toolbar">
+            <strong>Notes</strong>
+            <button class="nb-btn" onclick="clearNotes()">&#128465; Clear</button>
+            <span id="notes-saved">Auto-saved</span>
+          </div>
+          <textarea id="notes-textarea" placeholder="Take notes here... (saved in browser)"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Status Bar -->
+<div class="statusbar">
+  <span class="dot" id="status-dot"></span>
+  <span id="status-text">Ready</span>
+  <span style="margin-left:auto" id="status-cwd">/workspace</span>
+</div>
+
+<!-- Context Menu -->
+<div class="ctx-menu" id="ctx-menu" style="display:none"></div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="modal-overlay" style="display:none" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modal-title">Edit File</h3>
+      <button class="modal-close" onclick="closeModalDirect()">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+var S = {
+  path: '/workspace',
+  history: [],
+  future: [],
+  entries: [],
+  selected: null,
+  view: 'list',
+  sort: {by: 'name', asc: true},
+  panelOpen: false,
+  activeTab: 'props',
+};
+
+// ── Boot ──
+(function(){
+  restoreNotes();
+  navigateTo('/workspace');
+  loadQuickAccess();
+  document.addEventListener('click', hideCtx);
+  document.addEventListener('keydown', onKey);
+  // Open notes panel by default
+  openPanel('notes');
+})();
+
+// ── Navigation ──
+function navigateTo(path){
+  if(path === S.path) return;
+  S.history.push(S.path);
+  S.future = [];
+  S.path = path;
+  S.selected = null;
+  refreshList();
+  updateBreadcrumb();
+  updateSidebarActive();
+  updateNavBtns();
+}
+
+function navUp(){
+  var p = S.path.replace(/\/$/, '');
+  var parent = p.lastIndexOf('/') > 0 ? p.substring(0, p.lastIndexOf('/')) : '/';
+  navigateTo(parent);
+}
+
+function navBack(){
+  if(!S.history.length) return;
+  S.future.push(S.path);
+  S.path = S.history.pop();
+  S.selected = null;
+  refreshList(); updateBreadcrumb(); updateSidebarActive(); updateNavBtns();
+}
+
+function navFwd(){
+  if(!S.future.length) return;
+  S.history.push(S.path);
+  S.path = S.future.pop();
+  S.selected = null;
+  refreshList(); updateBreadcrumb(); updateSidebarActive(); updateNavBtns();
+}
+
+function updateNavBtns(){
+  document.getElementById('btn-back').disabled = S.history.length === 0;
+  document.getElementById('btn-fwd').disabled = S.future.length === 0;
+}
+
+function updateBreadcrumb(){
+  var parts = S.path.split('/').filter(Boolean);
+  var segs = ['<span class="seg" onclick="navigateTo(\'/\')">&#127968;</span>'];
+  var accum = '';
+  parts.forEach(function(p, i){
+    accum += '/' + p;
+    var cap = accum;
+    segs.push('<span class="sep">&#8250;</span>');
+    if(i === parts.length - 1){
+      segs.push('<span class="seg last">' + esc(p) + '</span>');
+    } else {
+      segs.push('<span class="seg" onclick="navigateTo(\'' + esc(cap) + '\')">' + esc(p) + '</span>');
+    }
+  });
+  document.getElementById('breadcrumb').innerHTML = segs.join('');
+  document.getElementById('status-cwd').textContent = S.path;
+  var emptyBtn = document.getElementById('btn-empty-trash');
+  if(emptyBtn) emptyBtn.style.display = (S.path === TRASH_PATH) ? 'flex' : 'none';
+}
+
+function updateSidebarActive(){
+  document.querySelectorAll('.sidebar-item[data-path]').forEach(function(el){
+    el.classList.toggle('active', el.dataset.path === S.path);
+  });
+}
+
+// ── File List ──
+async function refreshList(){
+  setLoading(true);
+  try{
+    var r = await fetch('/api/files/list?path=' + encodeURIComponent(S.path));
+    if(!r.ok){ var e = await r.json(); throw new Error(e.detail || r.statusText); }
+    var data = await r.json();
+    S.entries = data.entries;
+    renderEntries();
+    setStatus(data.entries.length + ' item' + (data.entries.length !== 1 ? 's' : ''));
+    document.getElementById('status-dot').classList.remove('off');
+  } catch(e){
+    setStatus('Error: ' + e.message, true);
+    document.getElementById('status-dot').classList.add('off');
+    S.entries = [];
+    renderEntries();
+  }
+  setLoading(false);
+}
+
+function setLoading(on){
+  document.getElementById('list-loading').style.display = on ? 'flex' : 'none';
+  document.getElementById('list-empty').style.display = 'none';
+}
+
+function renderEntries(){
+  var sorted = sortEntries(S.entries);
+  if(S.view === 'list') renderList(sorted);
+  else renderGrid(sorted);
+}
+
+function sortEntries(entries){
+  var by = S.sort.by, asc = S.sort.asc;
+  return entries.slice().sort(function(a, b){
+    if(a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    var va = (by === 'size') ? (a.size||0) : (a[by]||'');
+    var vb = (by === 'size') ? (b.size||0) : (b[by]||'');
+    var cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    return asc ? cmp : -cmp;
+  });
+}
+
+function sortBy(col){
+  if(S.sort.by === col) S.sort.asc = !S.sort.asc;
+  else { S.sort.by = col; S.sort.asc = true; }
+  renderEntries();
+}
+
+function renderList(entries){
+  var tbody = document.getElementById('list-body');
+  var empty = document.getElementById('list-empty');
+  tbody.innerHTML = '';
+  if(!entries.length){ empty.style.display = 'flex'; return; }
+  empty.style.display = 'none';
+  entries.forEach(function(e){
+    var tr = document.createElement('tr');
+    tr.className = 'file-row';
+    if(S.selected && S.selected.name === e.name) tr.classList.add('selected');
+    if(CB.entry && CB.entry.name === e.name && CB.op === 'cut') tr.classList.add('cut-mark');
+    tr.draggable = true;
+    tr.innerHTML =
+      '<td><span class="file-icon">' + fileIcon(e) + '</span>' +
+        '<span class="file-name' + (e.type==='dir' ? ' is-dir' : '') + '">' + esc(e.name) + '</span></td>' +
+      '<td class="col-size">' + (e.type==='dir' ? '—' : formatSize(e.size)) + '</td>' +
+      '<td class="col-date">' + (e.modified ? formatDate(e.modified) : '—') + '</td>' +
+      '<td>' + permPill(e) + '</td>';
+    tr.addEventListener('click', function(ev){ ev.stopPropagation(); selectEntry(e, tr); });
+    tr.addEventListener('dblclick', function(){ activateEntry(e); });
+    tr.addEventListener('contextmenu', function(ev){ ev.preventDefault(); selectEntry(e, tr); showCtx(ev, e); });
+    addDragHandlers(tr, e);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderGrid(entries){
+  var cells = document.getElementById('grid-cells');
+  var empty = document.getElementById('grid-empty');
+  cells.innerHTML = '';
+  if(!entries.length){ empty.style.display = 'flex'; return; }
+  empty.style.display = 'none';
+  entries.forEach(function(e){
+    var div = document.createElement('div');
+    div.className = 'grid-cell';
+    if(S.selected && S.selected.name === e.name) div.classList.add('selected');
+    if(CB.entry && CB.entry.name === e.name && CB.op === 'cut') div.classList.add('cut-mark');
+    div.draggable = true;
+    div.innerHTML = '<div class="gc-icon">' + fileIcon(e) + '</div><div class="gc-name">' + esc(e.name) + '</div>';
+    div.addEventListener('click', function(ev){ ev.stopPropagation(); selectEntry(e, div); });
+    div.addEventListener('dblclick', function(){ activateEntry(e); });
+    div.addEventListener('contextmenu', function(ev){ ev.preventDefault(); selectEntry(e, div); showCtx(ev, e); });
+    addDragHandlers(div, e);
+    cells.appendChild(div);
+  });
+}
+
+// Single-click: select; double-click: navigate/open (GNOME behavior)
+function selectEntry(e, el){
+  S.selected = e;
+  document.querySelectorAll('.file-row.selected,.grid-cell.selected').forEach(function(r){ r.classList.remove('selected'); });
+  if(el) el.classList.add('selected');
+  if(S.panelOpen && S.activeTab === 'props') showPropsPanel(e);
+}
+
+function activateEntry(e){
+  if(e.type === 'dir'){
+    navigateTo(joinPath(S.path, e.name));
+  } else {
+    openPanel('props');
+    showPropsPanel(e);
+  }
+}
+
+// ── File Icons ──
+var EXT_ICONS = {
+  py:'🐍',js:'🟨',ts:'🔷',jsx:'⚛️',tsx:'⚛️',
+  json:'{}',yaml:'📋',yml:'📋',toml:'📋',ini:'⚙️',cfg:'⚙️',conf:'⚙️',
+  md:'📝',txt:'📄',rst:'📄',log:'📜',
+  sh:'💲',bash:'💲',zsh:'💲',
+  html:'🌐',css:'🎨',scss:'🎨',
+  png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',svg:'🖼',
+  mp4:'🎬',mov:'🎬',
+  mp3:'🎵',wav:'🎵',
+  zip:'📦',tar:'📦',gz:'📦',bz2:'📦',
+  pdf:'📕',csv:'📊',xlsx:'📊',
+  sql:'🗄',db:'🗄',sqlite:'🗄',
+  go:'🐹',rs:'🦀',c:'🔵',cpp:'🔵',
+  java:'☕',rb:'💎',php:'🐘',
+  env:'🔑',key:'🔑',pem:'🔑',
+  dockerfile:'🐳',
+};
+function fileIcon(e){
+  if(e.type === 'dir') return '📁';
+  var ext = (e.name.split('.').pop() || '').toLowerCase();
+  if(e.name.toLowerCase() === 'dockerfile') return '🐳';
+  return EXT_ICONS[ext] || '📄';
+}
+
+// ── Permission Pill ──
+function permPill(e){
+  if(e.unreadable) return '<span class="perm-pill denied">🔒 denied</span>';
+  var ai = e.ai_level || 'rw';
+  var labels = { rw: '✅ AI rw', ro: '👁 AI ro' };
+  var cls = ai === 'ro' ? 'world-w' : '';
+  var oct = e.mode_octal || '000';
+  return '<span class="perm-pill ' + cls + '" onclick="openPropsFromPill(event)" ' +
+    'data-name="' + esc(e.name) + '" title="AI: ' + ai + '  mode: ' + oct + '">' +
+    (labels[ai] || oct) + '</span>';
+}
+
+function openPropsFromPill(ev){
+  ev.stopPropagation();
+  var name = ev.currentTarget.dataset.name;
+  var entry = S.entries.find(function(e){ return e.name === name; });
+  if(entry){ S.selected = entry; openPanel('props'); showPropsPanel(entry); }
+}
+
+// ── Right Panel ──
+function openPanel(tab){
+  S.panelOpen = true;
+  document.getElementById('right-panel').classList.add('open');
+  document.getElementById('btn-notes').classList.toggle('active', tab === 'notes');
+  switchTab(tab || S.activeTab);
+}
+
+function toggleNotes(){
+  if(S.panelOpen && S.activeTab === 'notes'){
+    S.panelOpen = false;
+    document.getElementById('right-panel').classList.remove('open');
+    document.getElementById('btn-notes').classList.remove('active');
+  } else {
+    openPanel('notes');
+  }
+}
+
+function switchTab(tab){
+  S.activeTab = tab;
+  document.querySelectorAll('.panel-tab').forEach(function(t){ t.classList.remove('active'); });
+  document.querySelectorAll('.panel-content').forEach(function(c){ c.classList.remove('active'); });
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.getElementById('panel-' + tab).classList.add('active');
+  if(tab === 'notes') document.getElementById('btn-notes').classList.add('active');
+  else document.getElementById('btn-notes').classList.remove('active');
+}
+
+function showPropsPanel(e){
+  if(!e) return;
+  var path = joinPath(S.path, e.name);
+  var oct = e.mode_octal || '644';
+  var size = e.type === 'dir' ? '—' : (e.size !== null ? formatSize(e.size) : 'unknown');
+  var html =
+    // ── Header: icon + name side by side ──
+    '<div class="prop-header">' +
+      '<span class="ph-icon">' + fileIcon(e) + '</span>' +
+      '<div><div class="ph-name">' + esc(e.name) + '</div>' +
+        '<div class="ph-type">' + (e.type==='dir'?'Folder':'File') + '</div></div>' +
+    '</div>' +
+    // ── Info: 2-column horizontal grid ──
+    '<div class="info-grid">' +
+      '<div class="info-cell"><div class="ic-label">Size</div><div class="ic-value">' + size + '</div></div>' +
+      '<div class="info-cell"><div class="ic-label">Mode</div><div class="ic-value" style="font-family:ui-monospace,monospace">' + (e.mode || oct) + '</div></div>' +
+      '<div class="info-cell"><div class="ic-label">Modified</div><div class="ic-value">' + (e.modified ? formatDate(e.modified) : '—') + '</div></div>' +
+      (e.uid !== undefined ? '<div class="info-cell"><div class="ic-label">Owner UID</div><div class="ic-value">' + e.uid + '</div></div>' : '<div class="info-cell"></div>') +
+    '</div>' +
+    // ── Permissions: 3 cards in a row ──
+    '<div class="perm-section">' +
+      '<div class="perm-title">&#9881; AI Permissions</div>' +
+      buildPermCards(e.ai_level || 'rw', path, e.type) +
+    '</div>' +
+    // ── File viewer (files only) ──
+    (e.type !== 'dir'
+      ? '<div class="file-viewer">' +
+          '<div class="fv-toolbar">' +
+            '<span class="fv-title">&#128196; ' + esc(e.name) + '</span>' +
+            '<button class="fv-btn" onclick="loadFileContent(\'' + esc(path) + '\')">&#8635;</button>' +
+            '<button class="fv-save-btn" id="fv-save-btn" onclick="saveFileContent(\'' + esc(path) + '\')" disabled>Save</button>' +
+          '</div>' +
+          '<textarea class="fv-content" id="fv-content" spellcheck="false" placeholder="Click ↺ to load..."></textarea>' +
+        '</div>'
+      : '');
+  document.getElementById('panel-props').innerHTML = html;
+  // Auto-load small files
+  if(e.type !== 'dir' && e.size !== null && e.size < 200000) loadFileContent(path);
+}
+
+var PERM_PRESETS = [
+  {
+    icon: '✅', label: 'AI read + write',
+    desc: 'Claude / agy / hermes can read and modify',
+    file: '644', dir: '755',
+  },
+  {
+    icon: '👁', label: 'AI read only',
+    desc: 'Claude / agy / hermes can read, not write',
+    file: '444', dir: '555',
+  },
+  {
+    icon: '🔒', label: 'AI cannot see',
+    desc: 'Invisible to AI — only you (host) can access',
+    file: '600', dir: '700',
+  },
+];
+
+function buildPermCards(currentLevel, path, type){
+  return '<div class="perm-cards">' +
+    PERM_PRESETS.map(function(p, i){
+      var levels = ['rw', 'ro', 'none'];
+      var level = levels[i];
+      var mode = type === 'dir' ? p.dir : p.file;
+      var isCurrent = currentLevel === level;
+      return '<div class="perm-card' + (isCurrent ? ' current' : '') + '" ' +
+        'onclick="applyPerm(\'' + esc(path) + '\',\'' + mode + '\',\'' + esc(type) + '\')">' +
+        '<span class="pc-icon">' + p.icon + '</span>' +
+        '<div class="pc-body">' +
+          '<div class="pc-label">' + p.label + '</div>' +
+          '<div class="pc-desc">' + p.desc + '</div>' +
+          '<div class="pc-mode">' + mode + (type==='dir'?' (folder)':' (file)') + '</div>' +
+        '</div>' +
+        '<span class="pc-tick">&#10003;</span>' +
+        '</div>';
+    }).join('') +
+  '</div>';
+}
+
+async function loadFileContent(path){
+  var box = document.getElementById('fv-content');
+  var saveBtn = document.getElementById('fv-save-btn');
+  if(!box) return;
+  box.value = 'Loading…';
+  box.classList.remove('dirty');
+  if(saveBtn) saveBtn.disabled = true;
+  try{
+    var r = await fetch('/api/files/read?path=' + encodeURIComponent(path));
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    var data = await r.json();
+    box.value = data.content;
+    box.dataset.original = data.content;
+    box.oninput = function(){
+      var dirty = box.value !== box.dataset.original;
+      box.classList.toggle('dirty', dirty);
+      if(saveBtn) saveBtn.disabled = !dirty;
+    };
+  } catch(e){
+    box.value = '// Cannot load: ' + e.message;
+  }
+}
+
+async function saveFileContent(path){
+  var box = document.getElementById('fv-content');
+  var saveBtn = document.getElementById('fv-save-btn');
+  if(!box) return;
+  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/files/write', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path:path, content:box.value})
+    });
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    var res = await r.json();
+    box.dataset.original = box.value;
+    box.classList.remove('dirty');
+    setStatus('Saved ' + formatSize(res.written));
+  } catch(e){
+    setStatus('Save failed: ' + e.message, true);
+  } finally{
+    if(saveBtn){ saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+  }
+}
+
+// ── Panel resize ──
+(function(){
+  var handle, panel, startX, startW;
+  function onMouseMove(ev){
+    var newW = startW - (ev.clientX - startX);
+    panel.style.width = Math.max(200, Math.min(700, newW)) + 'px';
+  }
+  function onMouseUp(){
+    handle.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    handle = document.getElementById('panel-resize-handle');
+    panel = document.getElementById('right-panel');
+    if(!handle) return;
+    handle.addEventListener('mousedown', function(ev){
+      startX = ev.clientX;
+      startW = panel.offsetWidth;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+})();
+
+async function applyPerm(filepath, mode, type){
+  // Map chmod preset back to permission level
+  var levelMap = {
+    '644': 'rw', '755': 'rw',
+    '444': 'ro', '555': 'ro',
+    '600': 'none', '700': 'none',
+  };
+  var level = levelMap[mode] || 'rw';
+  try{
+    // Use the new permissions API — backend handles config + chmod
+    var r = await fetch('/api/files/permissions/set', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path:filepath, level:level, type:type})
+    });
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    var res = await r.json();
+    setStatus('AI permission → ' + level + '  (chmod ' + res.mode + ') on ' + filepath.split('/').pop());
+    refreshList();
+    // Refresh props panel
+    if(S.selected) {
+      S.selected.ai_level = level;
+      S.selected.mode_octal = res.mode;
+      showPropsPanel(S.selected);
+    }
+  } catch(e){
+    setStatus('Permission change failed: ' + e.message, true);
+  }
+}
+
+// ── Context Menu ──
+function showCtx(ev, e){
+  var menu = document.getElementById('ctx-menu');
+  var isDir = e.type === 'dir';
+  var items = isDir
+    ? [{icon:'📂',label:'Open Folder',fn:'open'}]
+    : [{icon:'&#128065;',label:'Properties',fn:'props'},{icon:'&#9998;',label:'Edit File',fn:'edit'}];
+  items.push({sep:true});
+  items.push({icon:'&#128203;',label:'Copy',fn:'copy'});
+  items.push({icon:'&#9986;',label:'Cut',fn:'cut'});
+  if(CB.entry) items.push({icon:'&#128203;',label:'Paste here',fn:'paste'});
+  items.push({sep:true});
+  items.push({icon:'&#9881;',label:'Permissions',fn:'props'});
+  items.push({sep:true});
+  items.push({icon:'&#128203;',label:'Copy path',fn:'copypath'});
+  items.push({sep:true});
+  items.push({icon:'&#128465;',label:'Move to Trash',fn:'trash'});
+
+  menu.innerHTML = items.map(function(it){
+    if(it.sep) return '<div class="ctx-sep"></div>';
+    return '<div class="ctx-item" onclick="ctxAction(\'' + it.fn + '\')">' +
+      '<span>' + it.icon + '</span>' + it.label + '</div>';
+  }).join('');
+
+  var x = Math.min(ev.clientX, window.innerWidth - 175);
+  var y = ev.clientY;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.style.display = 'block';
+  requestAnimationFrame(function(){
+    var h = menu.offsetHeight;
+    if(y + h > window.innerHeight - 20) menu.style.top = (y - h) + 'px';
+  });
+}
+
+function ctxAction(fn){
+  hideCtx();
+  if(!S.selected) return;
+  if(fn === 'open'){ activateEntry(S.selected); }
+  else if(fn === 'props'){ openPanel('props'); showPropsPanel(S.selected); }
+  else if(fn === 'edit'){ openEditModal(); }
+  else if(fn === 'copy'){ cbSet(S.selected, 'copy'); }
+  else if(fn === 'cut'){ cbSet(S.selected, 'cut'); }
+  else if(fn === 'paste'){ cbPaste(S.path); }
+  else if(fn === 'trash'){ moveToTrash(S.selected); }
+  else if(fn === 'copypath'){
+    var p = joinPath(S.path, S.selected.name);
+    navigator.clipboard && navigator.clipboard.writeText(p).then(function(){
+      setStatus('Copied: ' + p);
+    });
+  }
+}
+
+function hideCtx(){ document.getElementById('ctx-menu').style.display = 'none'; }
+
+// ── Trash ──
+var TRASH_PATH = '/home/ai_user/.trash';
+
+async function moveToTrash(e){
+  if(!e) return;
+  var src = joinPath(S.path, e.name);
+  try{
+    var r = await fetch('/api/files/move', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({src: src, dst: TRASH_PATH})
+    });
+    if(!r.ok){ var err=await r.json(); throw new Error(err.detail||r.statusText); }
+    setStatus('Moved to Trash: ' + e.name);
+    S.selected = null;
+    refreshList();
+  } catch(err){ setStatus('Trash failed: ' + err.message, true); }
+}
+
+async function emptyTrash(){
+  if(!confirm('Permanently delete everything in Trash?')) return;
+  try{
+    var list = await fetch('/api/files/list?path=' + encodeURIComponent(TRASH_PATH));
+    if(!list.ok) throw new Error('Cannot read Trash');
+    var data = await list.json();
+    await Promise.all(data.entries.map(function(e){
+      return fetch('/api/files/delete', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path: joinPath(TRASH_PATH, e.name)})
+      });
+    }));
+    setStatus('Trash emptied');
+    refreshList();
+  } catch(err){ setStatus('Empty trash failed: ' + err.message, true); }
+}
+
+// ── Edit Modal ──
+async function openEditModal(){
+  if(!S.selected || S.selected.type === 'dir'){ setStatus('Select a file to edit'); return; }
+  var path = joinPath(S.path, S.selected.name);
+  document.getElementById('modal-title').textContent = 'Edit — ' + S.selected.name;
+  document.getElementById('modal-body').innerHTML = '<div class="state-loading"><div class="spin"></div></div>';
+  document.getElementById('modal-footer').innerHTML = '';
+  document.getElementById('modal-overlay').style.display = 'flex';
+  try{
+    var r = await fetch('/api/files/read?path=' + encodeURIComponent(path));
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    var data = await r.json();
+    document.getElementById('modal-body').innerHTML =
+      '<textarea id="edit-area" style="width:100%;height:320px;background:#1a1a1a;color:#e8e8e8;' +
+      'border:1px solid var(--border);border-radius:4px;padding:10px;' +
+      'font-family:ui-monospace,\'Cascadia Code\',monospace;font-size:12px;line-height:1.5;' +
+      'resize:vertical;outline:none;tab-size:4;box-sizing:border-box">' + esc(data.content) + '</textarea>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + formatSize(data.size) + '</div>';
+    document.getElementById('modal-footer').innerHTML =
+      '<button class="mbtn secondary" onclick="closeModalDirect()">Cancel</button>' +
+      '<button class="mbtn primary" onclick="saveEditModal(\'' + esc(path) + '\')">&#128190; Save</button>';
+  } catch(e){
+    document.getElementById('modal-body').innerHTML = '<div style="color:var(--red)">Error: ' + e.message + '</div>';
+    document.getElementById('modal-footer').innerHTML = '<button class="mbtn secondary" onclick="closeModalDirect()">Close</button>';
+  }
+}
+
+async function saveEditModal(filepath){
+  var area = document.getElementById('edit-area');
+  if(!area) return;
+  try{
+    var r = await fetch('/api/files/write', {
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path:filepath, content:area.value})
+    });
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    var res = await r.json();
+    closeModalDirect();
+    setStatus('Saved ' + formatSize(res.written));
+  } catch(e){
+    setStatus('Save failed: ' + e.message, true);
+  }
+}
+
+function closeModal(ev){ if(ev.target===document.getElementById('modal-overlay')) closeModalDirect(); }
+function closeModalDirect(){ document.getElementById('modal-overlay').style.display='none'; }
+
+// ── View Toggle ──
+function setView(v){
+  S.view = v;
+  document.getElementById('list-view').style.display = v==='list' ? 'block' : 'none';
+  document.getElementById('grid-view').style.display = v==='grid' ? 'block' : 'none';
+  document.getElementById('btn-list').classList.toggle('active', v==='list');
+  document.getElementById('btn-grid').classList.toggle('active', v==='grid');
+  renderEntries();
+}
+
+// ── Notes ──
+var notesTimer = null;
+var DEFAULT_NOTE = [
+  '=== AI Permission Guide ===',
+  '',
+  'Three levels control what AI agents (hermes/claude/agy)',
+  'can do with each file or folder in Docker:',
+  '',
+  '--- Permission Levels ---',
+  '',
+  '✅ AI read + write  →  Full access',
+  '   AI can read, edit, delete, and chmod.',
+  '   Config persists in .aios-permissions.json',
+  '',
+  '👁 AI read only     →  View only',
+  '   AI can read but NOT write, delete, or chmod.',
+  '   Filesystem mode: 444/555',
+  '',
+  '🔒 AI cannot see    →  Completely hidden',
+  '   Path is invisible in listings and blocked',
+  '   from all operations. Filesystem mode: 600/700',
+  '',
+  '--- How It Works ---',
+  '',
+  '1. Click any file/folder → Properties panel',
+  '2. Click a permission card to set the level',
+  '3. Backend saves to /.aios-permissions.json',
+  '4. Permission is enforced in ALL API endpoints',
+  '',
+  '--- Removal ---',
+  '',
+  'Set back to ✅ AI read+write to remove the entry,',
+  'or delete the entry from .aios-permissions.json',
+  '',
+  'Tip: Prefix matching — setting a folder level',
+  'applies to everything inside it.',
+].join('\n');
+
+function restoreNotes(){
+  document.getElementById('notes-textarea').value = localStorage.getItem('aios-notes') || DEFAULT_NOTE;
+  document.getElementById('notes-textarea').addEventListener('input', function(){
+    clearTimeout(notesTimer);
+    notesTimer = setTimeout(function(){
+      localStorage.setItem('aios-notes', document.getElementById('notes-textarea').value);
+      document.getElementById('notes-saved').textContent = 'Saved ' +
+        new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+    }, 600);
+  });
+}
+function clearNotes(){
+  if(!confirm('Clear all notes?')) return;
+  document.getElementById('notes-textarea').value = '';
+  localStorage.removeItem('aios-notes');
+  document.getElementById('notes-saved').textContent = 'Cleared';
+}
+
+// ── Quick Access ──
+async function loadQuickAccess(){
+  var container = document.getElementById('sidebar-quick');
+  try{
+    var r = await fetch('/api/files/list?path=/workspace');
+    if(!r.ok) return;
+    var data = await r.json();
+    data.entries.filter(function(e){ return e.type==='dir'; }).slice(0,6).forEach(function(d){
+      var div = document.createElement('div');
+      div.className = 'sidebar-item';
+      div.dataset.path = '/workspace/' + d.name;
+      div.innerHTML = '<span class="si-icon">📁</span> ' + esc(d.name);
+      div.onclick = function(){ navigateTo('/workspace/' + d.name); };
+      container.appendChild(div);
+    });
+    initSidebarDrop();
+  } catch(e){}
+  initSidebarDrop();
+}
+
+// ── Clipboard ──
+var CB = {entry: null, srcPath: null, op: null};
+
+function cbSet(e, op){
+  CB = {entry: e, srcPath: joinPath(S.path, e.name), op: op};
+  setStatus((op==='copy'?'Copied':'Cut') + ': ' + e.name + '  (Ctrl+V to paste)');
+  renderEntries();
+}
+
+async function cbPaste(destDir){
+  if(!CB.entry) return;
+  var dst = joinPath(destDir, CB.entry.name);
+  var endpoint = CB.op === 'copy' ? '/api/files/copy' : '/api/files/move';
+  try{
+    var r = await fetch(endpoint, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({src: CB.srcPath, dst: dst})
+    });
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    setStatus((CB.op==='copy'?'Pasted copy: ':'Moved: ') + CB.entry.name);
+    if(CB.op === 'cut') CB = {entry:null, srcPath:null, op:null};
+    refreshList();
+  } catch(e){ setStatus('Paste failed: ' + e.message, true); }
+}
+
+// ── Drag & Drop ──
+var dragSrc = null;
+
+function addDragHandlers(el, e){
+  el.addEventListener('dragstart', function(ev){
+    dragSrc = {entry: e, path: joinPath(S.path, e.name)};
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', dragSrc.path);
+    setTimeout(function(){ el.classList.add('dragging'); }, 0);
+  });
+  el.addEventListener('dragend', function(){
+    el.classList.remove('dragging');
+    dragSrc = null;
+  });
+  if(e.type === 'dir'){
+    el.addEventListener('dragover', function(ev){
+      if(!dragSrc || dragSrc.path === joinPath(S.path, e.name)) return;
+      ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', function(){ el.classList.remove('drag-over'); });
+    el.addEventListener('drop', function(ev){
+      ev.preventDefault(); el.classList.remove('drag-over');
+      if(!dragSrc) return;
+      var dest = joinPath(S.path, e.name);
+      if(dragSrc.path === dest) return;
+      dropMove(dragSrc.path, dest);
+    });
+  }
+}
+
+async function dropMove(srcPath, destDir){
+  try{
+    var r = await fetch('/api/files/move', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({src: srcPath, dst: destDir})
+    });
+    if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
+    setStatus('Moved to ' + destDir.split('/').pop());
+    refreshList();
+  } catch(e){ setStatus('Move failed: ' + e.message, true); }
+}
+
+function initSidebarDrop(){
+  document.querySelectorAll('.sidebar-item[data-path]').forEach(function(el){
+    el.addEventListener('dragover', function(ev){
+      if(!dragSrc) return;
+      ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', function(){ el.classList.remove('drag-over'); });
+    el.addEventListener('drop', function(ev){
+      ev.preventDefault(); el.classList.remove('drag-over');
+      if(!dragSrc) return;
+      dropMove(dragSrc.path, el.dataset.path);
+    });
+  });
+}
+
+// ── Keyboard Shortcuts ──
+function onKey(ev){
+  var tag = document.activeElement && document.activeElement.tagName;
+  if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if(ev.altKey && ev.key === 'ArrowLeft'){ navBack(); ev.preventDefault(); }
+  else if(ev.altKey && ev.key === 'ArrowRight'){ navFwd(); ev.preventDefault(); }
+  else if(ev.altKey && ev.key === 'ArrowUp'){ navUp(); ev.preventDefault(); }
+  else if(ev.key === 'Enter' && S.selected){ activateEntry(S.selected); }
+  else if(ev.key === 'Escape'){ hideCtx(); closeModalDirect(); CB={entry:null,srcPath:null,op:null}; renderEntries(); }
+  else if(ev.key === 'F5'){ refreshList(); ev.preventDefault(); }
+  else if(ev.ctrlKey && ev.key === 'c' && S.selected){ cbSet(S.selected, 'copy'); ev.preventDefault(); }
+  else if(ev.ctrlKey && ev.key === 'x' && S.selected){ cbSet(S.selected, 'cut'); ev.preventDefault(); }
+  else if(ev.ctrlKey && ev.key === 'v'){ cbPaste(S.path); ev.preventDefault(); }
+}
+
+// ── Helpers ──
+function joinPath(base, name){ return base.replace(/\/$/, '') + '/' + name; }
+function setStatus(msg, err){
+  document.getElementById('status-text').textContent = msg;
+  document.getElementById('status-dot').classList.toggle('off', !!err);
+}
+function formatSize(bytes){
+  if(bytes===null||bytes===undefined) return '—';
+  if(bytes<1024) return bytes+' B';
+  if(bytes<1048576) return (bytes/1024).toFixed(1)+' KB';
+  if(bytes<1073741824) return (bytes/1048576).toFixed(1)+' MB';
+  return (bytes/1073741824).toFixed(1)+' GB';
+}
+function formatDate(iso){
+  if(!iso) return '—';
+  var d = new Date(iso);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+
+    ' '+d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}
+function esc(s){
+  if(!s) return '';
+  var d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
