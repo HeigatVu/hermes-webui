@@ -329,6 +329,9 @@ body{display:flex;flex-direction:column;height:100vh;overflow:hidden;user-select
     <div class="sidebar-item" onclick="navigateTo('/workspace')" data-path="/workspace">
       <span class="si-icon">&#128196;</span> workspace
     </div>
+    <div class="sidebar-item" onclick="navigateTo('/outputs')" data-path="/outputs">
+      <span class="si-icon">📤</span> outputs
+    </div>
     <div class="sidebar-item" onclick="navigateTo('/aiOS-ui')" data-path="/aiOS-ui">
       <span class="si-icon">&#128187;</span> aiOS-ui
     </div>
@@ -874,7 +877,12 @@ async function applyPerm(filepath, mode, type){
     });
     if(!r.ok){ var e=await r.json(); throw new Error(e.detail||r.statusText); }
     var res = await r.json();
-    setStatus('AI permission → ' + level + '  (chmod ' + res.mode + ') on ' + filepath.split('/').pop());
+    var fname = filepath.split('/').pop();
+    if(res.chmod_applied){
+      setStatus('AI permission \u2192 ' + level + ' (chmod ' + res.mode + ') on ' + fname);
+    } else {
+      setStatus('Config saved \u2192 ' + level + ' but chmod FAILED: ' + (res.chmod_error||'unknown') + ' \u2014 ' + fname, true);
+    }
     refreshList();
     // Refresh props panel
     if(S.selected) {
