@@ -40,7 +40,7 @@ SIDECAR_PORT = int(os.environ.get("SIDECAR_PORT", "8501"))
 MAX_PROMPT_LENGTH = int(os.environ.get("SIDECAR_MAX_PROMPT_LENGTH", "16384"))  # 16KB
 
 SERVER_SCRIPT = Path(__file__).resolve().parent / "server.py"
-SUBSERVER_LOG = Path("/tmp/hermes-subserver.log")
+SUBSERVER_LOG = Path(f"/tmp/hermes-subserver-{os.getuid()}.log")
 
 logger = logging.getLogger("bff")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
@@ -74,6 +74,7 @@ _ALLOWED_WORKDIR_ROOTS = [
     Path("/aiOS-ui").resolve(),
     Path("/tmp").resolve(),
     Path("/outputs").resolve(),
+    Path("/my-data").resolve(),
 ]
 
 
