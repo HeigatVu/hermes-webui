@@ -1822,6 +1822,10 @@ def _check_csrf(handler) -> bool:
     # Extract host:port from origin/referer
     m = _re.match(r"^https?://([^/]+)", target)
     if not m:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
         return _set_csrf_failure_reason(handler, "origin_mismatch")
     origin_host = m.group(1)
     origin_scheme = m.group(0).split('://')[0].lower()  # 'http' or 'https'
@@ -1855,6 +1859,10 @@ def _check_csrf(handler) -> bool:
                 origin_allowed = True
                 break
     if not origin_allowed:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
         return _set_csrf_failure_reason(handler, "origin_mismatch")
 
     from api.auth import CSRF_HEADER_NAME, is_auth_enabled, parse_cookie, verify_csrf_token
@@ -1865,6 +1873,10 @@ def _check_csrf(handler) -> bool:
     submitted = handler.headers.get(CSRF_HEADER_NAME) or handler.headers.get("X-CSRF-Token")
     if verify_csrf_token(cookie_val or "", submitted or ""):
         return True
+    try:
+        handler.close_connection = True
+    except Exception:
+        pass
     return _set_csrf_failure_reason(handler, "token_mismatch")
 
 
