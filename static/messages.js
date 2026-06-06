@@ -568,6 +568,16 @@ async function send(){
   let msgText=text;
   if(uploaded.length&&!msgText)msgText=`I've uploaded ${uploaded.length} file(s): ${uploadedPaths.join(', ')}`;
   else if(uploaded.length)msgText=`${text}\n\n[Attached files: ${uploadedPaths.join(', ')}]`;
+  if(_forcedSkillDirectivePending){
+    const _pending=_forcedSkillDirectivePending;
+    if(!_pending.sessionId||_pending.sessionId===activeSid){
+      const _directive = await _pending.promise;
+      if(_forcedSkillDirectivePending===_pending)_forcedSkillDirectivePending = null;
+      if(typeof _directive==='string'&&_directive){
+        msgText=`${_directive}\n\n${msgText||''}`.trim();
+      }
+    }
+  }
   if(!msgText){setComposerStatus('Nothing to send');return;}
 
   $('msg').value='';autoResize();
@@ -777,6 +787,15 @@ function closeLiveStream(sessionId, streamId, source){
   if(!live) return;
   if(streamId&&live.streamId!==streamId) return;
   if(source&&live.source!==source) return;
+  // Snapshot the current live-turn DOM BEFORE tearing the stream down. The
+  // per-event snapshot (snapshotLiveTurn) only fires on content/tool_complete
+  // SSE events, so switching away during a quiet window (mid tool-exec, silent
+  // thinking) would leave a stale-or-absent snapshot — on switch-back
+  // restoreLiveTurnHtmlForSession() then fails and loadSession()'s fallback
+  // rebuilds with an EMPTY appendThinking(), permanently losing the streamed
+  // thinking/tool content (only the elapsed clock survives). Capturing here
+  // guarantees switch-back restores the exact state shown at switch-away. (#3668)
+  if(typeof snapshotLiveTurnHtmlForSession==='function') snapshotLiveTurnHtmlForSession(sessionId);
   try{live.source.close();}catch(_){ }
   delete LIVE_STREAMS[sessionId];
   // closeLiveStream() is called during session-switch teardown for any session
@@ -861,7 +880,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   function _ownsActiveStreamOrBackground(){
     return !_isActiveSession() || S.activeStreamId===streamId;
   }
-  function _bailOutOfTerminalEventsFromStaleStream(){
+  function _bailOutOfTerminalEventsFromStaleStream(source){
     if(_ownsActiveStreamOrBackground()) return false;
     _closeSource(source);
     return true;
@@ -2084,7 +2103,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
 
     source.addEventListener('done',e=>{
       if(_streamFinalized) return;
-      if(_bailOutOfTerminalEventsFromStaleStream()) return;
+      if(_bailOutOfTerminalEventsFromStaleStream(source)) return;
       // Set _streamFinalized IMMEDIATELY — before any fade delay. Without this,
       // a stream_end event arriving during the fade window sees
       // _streamFinalized=false, calls _restoreSettledSession(), and overwrites
@@ -2147,6 +2166,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           S.session=d.session;S.messages=_carryForwardEphemeralTurnFields(S.messages||[], d.session.messages||[]);if(typeof _messagesTruncated!=='undefined')_messagesTruncated=!!d.session._messages_truncated;
           S.messages=_filterRecoveryControlMessages(S.messages || []);
           if(typeof _hydrateTodosFromSession==='function') _hydrateTodosFromSession(S.session);
+          if(typeof clearVisibleMessageRowCache==='function') clearVisibleMessageRowCache();
           if(S.session&&S.session.session_id){
             try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
             if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(S.session.session_id);
@@ -2177,7 +2197,18 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           // Stamp _ts on the last assistant message if it has no timestamp
           if(lastAsst&&!lastAsst._ts&&!lastAsst.timestamp) lastAsst._ts=Date.now()/1000;
           if(d.usage){
-            S.lastUsage=d.usage;_syncCtxIndicator(d.usage);
+            const _doneUsageFallback={...(S.lastUsage||{})};
+            if(S.session){
+              for(const _usageField of ['context_length','threshold_tokens','last_prompt_tokens']){
+                if(_doneUsageFallback[_usageField]==null&&S.session[_usageField]!=null){
+                  _doneUsageFallback[_usageField]=S.session[_usageField];
+                }
+              }
+            }
+            S.lastUsage=typeof _mergeUsageForCtxIndicator==='function'
+              ? _mergeUsageForCtxIndicator(d.usage,_doneUsageFallback)
+              : {..._doneUsageFallback,...d.usage};
+            _syncCtxIndicator(S.lastUsage);
             // #503 — compute per-turn cost delta and attach to last assistant message
             if(lastAsst){
               const prevIn=_prevIn;
@@ -2249,6 +2280,16 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           if(!S.messages.some(m=>m.role==='assistant'&&String(m.content||'').trim())&&!assistantText){removeThinking();S.messages.push({role:'assistant',content:'**No response received.** Check your API key and model selection.'});}
           if(_markerOnlyAssistantError&&typeof showToast==='function') showToast('No response received after context compression. Please retry.',5000,'error');
           if(isSessionViewed) _markSessionViewed(completedSid, completedSession.message_count ?? S.messages.length);
+          // Cooldown: prevent refreshActiveSessionIfExternallyUpdated from
+          // force-reloading immediately after "done" — the event already
+          // delivered the final messages and tool calls.
+          if(typeof window!=='undefined') window._streamJustFinished=true;
+          setTimeout(()=>{ if(typeof window!=='undefined') window._streamJustFinished=false; }, 5000);
+          // Expand render window to cover all messages so the done render
+          // doesn't hide Activity behind a tiny window (winSize=50).
+          if(typeof _messageRenderableMessageCount==='function'&&typeof _messageRenderWindowSize!=='undefined'){
+            _messageRenderWindowSize=Math.max(typeof _currentMessageRenderWindowSize==='function'?_currentMessageRenderWindowSize():50, _messageRenderableMessageCount());
+          }
           syncTopbar();renderMessages({preserveScroll:true});
           if(shouldFollowOnDone&&typeof scrollToBottom==='function') scrollToBottom();
           if(typeof noteWorkspaceMutationsFromToolCalls==='function') noteWorkspaceMutationsFromToolCalls(S.toolCalls);
@@ -2287,7 +2328,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         _closeSource(source);
         return;
       }
-      if(_bailOutOfTerminalEventsFromStaleStream()) return;
+      if(_bailOutOfTerminalEventsFromStaleStream(source)) return;
       _terminalStateReached=true;
       try{
         const d=JSON.parse(e.data||'{}');
@@ -2356,6 +2397,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           // state in global transient UI makes later renderMessages() calls insert
           // a duplicate Automatic Compression card.
           window._compressionUi=null;
+          if(typeof _restoreCompressionPlaceholder==='function') _restoreCompressionPlaceholder();
           snapshotLiveTurn();
           return;
         }
@@ -2379,7 +2421,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const displaySid=currentSid;
       const message=String(d.message||'Context auto-compressed to continue the conversation').trim();
       if(d.usage&&typeof _syncCtxIndicator==='function'){
-        S.lastUsage={...(S.lastUsage||{}),...d.usage};
+        S.lastUsage=typeof _mergeUsageForCtxIndicator==='function'
+          ? _mergeUsageForCtxIndicator(d.usage,S.lastUsage||{})
+          : {...(S.lastUsage||{}),...d.usage};
         _syncCtxIndicator(S.lastUsage);
       }
       if(typeof setCompressionUi==='function'){
@@ -2401,6 +2445,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           // completion state as global transient UI, otherwise every subsequent
           // render projects the same Auto Compression card again.
           window._compressionUi=null;
+          if(typeof _restoreCompressionPlaceholder==='function') _restoreCompressionPlaceholder();
           snapshotLiveTurn();
         }
       }
@@ -2415,7 +2460,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         if((d.session_id||activeSid)!==activeSid) return;
         if(d.usage&&typeof _syncCtxIndicator==='function'){
           if(S.session&&S.session.session_id===activeSid){
-            S.lastUsage={...(S.lastUsage||{}),...d.usage};
+            S.lastUsage=typeof _mergeUsageForCtxIndicator==='function'
+              ? _mergeUsageForCtxIndicator(d.usage,S.lastUsage||{})
+              : {...(S.lastUsage||{}),...d.usage};
             _syncCtxIndicator(S.lastUsage);
           }
         }
@@ -2428,7 +2475,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     });
 
     source.addEventListener('apperror',e=>{
-      if(_bailOutOfTerminalEventsFromStaleStream()) return;
+      if(_bailOutOfTerminalEventsFromStaleStream(source)) return;
       _terminalStateReached=true;
       if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
       _streamFinalized=true;
@@ -2442,12 +2489,17 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _clearOwnerInflightState();
       _clearApprovalForOwner();
       _clearClarifyForOwner('terminal');
-      if(S.session&&S.session.session_id===activeSid){
+      let d={};
+      try{ d=JSON.parse(e.data||'{}')||{}; }catch(_){ d={}; }
+      const currentSid=S.session&&S.session.session_id;
+      const eventSid=d.old_session_id||d.session_id||'';
+      const continuationSid=(d.session&&d.session.session_id)||d.new_session_id||d.continuation_session_id||'';
+      const eventMatchesCurrent=!!(currentSid&&(eventSid===currentSid||continuationSid===currentSid));
+      if(S.session&&eventMatchesCurrent){
         S.activeStreamId=null;
         clearLiveToolCards();if(!assistantText)removeThinking();
         let isRecoveryControlMessage=false;
         try{
-          const d=JSON.parse(e.data);
           const isRateLimit=d.type==='rate_limit';
           const isQuotaExhausted=d.type==='quota_exhausted';
           const isAuthMismatch=d.type==='auth_mismatch';
@@ -2455,14 +2507,24 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           const isModelNotFound=d.type==='model_not_found';
           const isCancelled=d.type==='cancelled';
           const isInterrupted=d.type==='interrupted';
+          const isCompressionExhausted=d.type==='compression_exhausted';
           isRecoveryControlMessage=isInterrupted && (d.recovery_control===true || _streamRecoveryControlMessageText(d.message));
           const isNoResponse=d.type==='no_response'||d.type==='silent_failure';
-          const label=isCancelled?'Task cancelled':isInterrupted?'Response interrupted':isQuotaExhausted?'Out of credits':isRateLimit?'Rate limit reached':isGatewayAuthError?(typeof t==='function'?t('gateway_auth_label'):'Gateway authentication failed'):isAuthMismatch?(typeof t==='function'?t('provider_mismatch_label'):'Provider mismatch'):isModelNotFound?(typeof t==='function'?t('model_not_found_label'):'Model not found'):isNoResponse?'No response from provider':'Error';
+          const label=isCancelled?'Task cancelled':isInterrupted?'Response interrupted':isCompressionExhausted?'Context compression exhausted':isQuotaExhausted?'Out of credits':isRateLimit?'Rate limit reached':isGatewayAuthError?(typeof t==='function'?t('gateway_auth_label'):'Gateway authentication failed'):isAuthMismatch?(typeof t==='function'?t('provider_mismatch_label'):'Provider mismatch'):isModelNotFound?(typeof t==='function'?t('model_not_found_label'):'Model not found'):isNoResponse?'No response from provider':'Error';
           const hint=d.hint?`\n\n*${d.hint}*`:'';
           const details=d.details?String(d.details).replace(/```/g,'`\u200b``'):'';
           const detailsLabel=isCancelled?'Cancellation details':isInterrupted?'Interruption details':undefined;
+          window._compressionUi=null;
+          if(typeof clearCompressionUi==='function') clearCompressionUi();
           if(isRecoveryControlMessage){
             if(typeof showToast==='function') showToast('Stream recovery signal received. Restoring transcript...',3500,'error');
+          } else if(d.session&&typeof d.session==='object'){
+            S.session=d.session;
+            S.messages=_carryForwardEphemeralTurnFields(S.messages||[], d.session.messages||[]);
+            if(S.session&&S.session.session_id){
+              try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
+              if(typeof _setActiveSessionUrl==='function') _setActiveSessionUrl(S.session.session_id);
+            }
           } else {
             S.messages.push({role:'assistant',content:`**${label}:** ${d.message}${hint}`,provider_details:details,provider_details_label:detailsLabel});
           }
@@ -2479,13 +2541,12 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
             }
           })();
         } else {
-          _markSessionViewed(activeSid, S.messages.length);
+          _markSessionViewed((S.session&&S.session.session_id)||activeSid, S.messages.length);
           renderMessages({preserveScroll:true});
         }
       }else if(typeof trackBackgroundError==='function'){
         const _errTitle=(typeof _allSessions!=='undefined'&&_allSessions.find(s=>s.session_id===activeSid)||{}).title||null;
-        try{const d=JSON.parse(e.data);trackBackgroundError(activeSid,_errTitle,d.message||'Error');}
-        catch(_){trackBackgroundError(activeSid,_errTitle,'Error');}
+        trackBackgroundError(activeSid,_errTitle,d.message||'Error');
       }
       _setActivePaneIdleIfOwner();
       renderSessionList(); // clear streaming indicator immediately on apperror
@@ -2504,7 +2565,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     });
 
     source.addEventListener('error',async e=>{
-      if(_bailOutOfTerminalEventsFromStaleStream() && !_streamFinalized){
+      if(_bailOutOfTerminalEventsFromStaleStream(source) && !_streamFinalized){
         return;
       }
       if(_terminalStateReached || _streamFinalized){
@@ -2557,7 +2618,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     });
 
     source.addEventListener('cancel',e=>{
-      if(_bailOutOfTerminalEventsFromStaleStream()) return;
+      if(_bailOutOfTerminalEventsFromStaleStream(source)) return;
       _terminalStateReached=true;
       if(_persistTimer){clearTimeout(_persistTimer);_persistTimer=null;}
       _streamFinalized=true;
@@ -2708,6 +2769,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           S.toolCalls=[];
         }
         if(isSessionViewed) _markSessionViewed(completedSid, session.message_count ?? S.messages.length);
+        // Expand render window so the settled render doesn't hide Activity.
+        if(typeof _messageRenderableMessageCount==='function'&&typeof _messageRenderWindowSize!=='undefined'){
+          _messageRenderWindowSize=Math.max(typeof _currentMessageRenderWindowSize==='function'?_currentMessageRenderWindowSize():50, _messageRenderableMessageCount());
+        }
         syncTopbar();renderMessages({preserveScroll:true});
       }
       if(_isActiveSession()) _queueDrainSid=activeSid;
@@ -2886,6 +2951,8 @@ function hideApprovalCard(force=false) {
   _approvalSessionId = null;
   _resetApprovalCardState();
   card.classList.remove("visible");
+  card.classList.remove("collapsed");
+  _syncApprovalTranscriptSpace(null);
   $("approvalCmd").textContent = "";
   $("approvalDesc").textContent = "";
 }
@@ -2940,7 +3007,7 @@ function showApprovalCard(pending, pendingCount) {
   const keys = pending.pattern_keys || (pending.pattern_key ? [pending.pattern_key] : []);
   const desc = (pending.description || "") + (keys.length ? " [" + keys.join(", ") + "]" : "");
   const cmd = pending.command || "";
-  const sig = JSON.stringify({desc, cmd, sid: pending._session_id || (S.session && S.session.session_id) || null});
+  const sig = JSON.stringify({desc, cmd, sid: pending._session_id || (S.session && S.session.session_id) || null, approval_id: pending.approval_id || null});
   const card = $("approvalCard");
   const sameApproval = card.classList.contains("visible") && _approvalSignature === sig;
   $("approvalDesc").textContent = desc;
@@ -2961,17 +3028,81 @@ function showApprovalCard(pending, pendingCount) {
   if (!sameApproval) {
     _approvalVisibleSince = Date.now();
     _clearApprovalHideTimer();
+    // A distinct approval must always render expanded — never inherit a prior
+    // approval's collapsed state, which would hide its command + action buttons. (#3515)
+    card.classList.remove("collapsed");
   }
   // Re-enable buttons in case a previous approval disabled them
   ["approvalBtnOnce","approvalBtnSession","approvalBtnAlways","approvalBtnDeny"].forEach(id => {
     const b = $(id); if (b) { b.disabled = false; b.classList.remove("loading"); }
   });
   card.classList.add("visible");
+  _syncApprovalCollapseButton(card);
+  _syncApprovalTranscriptSpace(card, {immediate: true});
   if (typeof applyLocaleToDOM === "function") applyLocaleToDOM();
   const onceBtn = $("approvalBtnOnce");
   if (onceBtn && document.activeElement !== $('msg')) {
     setTimeout(() => onceBtn.focus({preventScroll: true}), 50);
   }
+}
+
+function _syncApprovalCollapseButton(card) {
+  const collapse = $("approvalCollapse");
+  if (!collapse || !card) return;
+  const collapsed = card.classList.contains("collapsed");
+  collapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  // Icon swap: chevron-down when expanded (click to collapse), chevron-up when collapsed (click to expand)
+  const polyline = collapse.querySelector("svg polyline");
+  if (polyline) polyline.setAttribute("points", collapsed ? "18 15 12 9 6 15" : "6 9 12 15 18 9");
+  const label = collapsed ? "Expand approval" : "Collapse approval";
+  collapse.setAttribute("aria-label", label);
+  collapse.title = label;
+}
+
+function _approvalMessagesNearBottom(messages) {
+  if (!messages) return false;
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 150;
+}
+
+function _syncApprovalTranscriptSpace(card, opts) {
+  opts = opts || {};
+  const messages = $("messages");
+  if (!messages) return;
+  const wasNearBottom = _approvalMessagesNearBottom(messages);
+  if (!card || !card.classList.contains("visible")) {
+    messages.classList.remove("approval-open");
+    messages.classList.remove("approval-collapsed");
+    messages.style.removeProperty("--approval-card-height");
+    messages.style.removeProperty("--approval-dock-height");
+    if (wasNearBottom && typeof scrollToBottom === "function" && typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(scrollToBottom);
+    }
+    return;
+  }
+  const collapsed = card.classList.contains("collapsed");
+  messages.classList.add("approval-open");
+  messages.classList.toggle("approval-collapsed", collapsed);
+  const measure = () => {
+    if (!card.classList.contains("visible")) return;
+    const target = collapsed ? card : (card.querySelector(".approval-inner") || card);
+    const h = target && target.getBoundingClientRect().height;
+    if (h > 0) {
+      messages.style.setProperty(collapsed ? "--approval-dock-height" : "--approval-card-height", Math.ceil(h + 24) + "px");
+    }
+    if (wasNearBottom && typeof scrollToBottom === "function") scrollToBottom();
+  };
+  if (opts.immediate) measure();
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(measure);
+  setTimeout(measure, 420);
+}
+
+function toggleApprovalCardCollapsed(forceCollapsed) {
+  const card = $("approvalCard");
+  if (!card) return;
+  const collapsed = typeof forceCollapsed === "boolean" ? forceCollapsed : !card.classList.contains("collapsed");
+  card.classList.toggle("collapsed", collapsed);
+  _syncApprovalCollapseButton(card);
+  _syncApprovalTranscriptSpace(card, {immediate: true});
 }
 
 async function respondApproval(choice) {
@@ -3284,6 +3415,8 @@ function _startClarifyCountdown(pending) {
 
 function _stashClarifyDraft(reason) {
   if (reason !== "expired" && reason !== "terminal") return false;
+  const submit = $("clarifySubmit");
+  if (submit && submit.classList.contains("loading")) return false;
   const input = $("clarifyInput");
   const draft = String((input && input.value) || "").trim();
   if (!draft) return false;

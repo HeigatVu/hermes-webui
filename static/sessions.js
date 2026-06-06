@@ -170,6 +170,7 @@ function _clearComposerDraft(sid) {
 const SESSION_VIEWED_COUNTS_KEY = 'hermes-session-viewed-counts';
 const SESSION_COMPLETION_UNREAD_KEY = 'hermes-session-completion-unread';
 const SESSION_OBSERVED_STREAMING_KEY = 'hermes-session-observed-streaming';
+const SESSION_MANUAL_STATUS_KEY = 'hermes-session-manual-status';
 let _sessionViewedCounts = null;
 let _sessionCompletionUnread = null;
 let _sessionObservedStreaming = null;
@@ -351,6 +352,43 @@ function _isSessionEffectivelyStreaming(s) {
 
 function _isServerIdleSessionRow(s) {
   return Boolean(s && s.session_id && !s.is_streaming && !s.active_stream_id && !s.pending_user_message);
+}
+
+// ── Manual session status (Todo / In Progress / Done) ─────────────────────
+const _SESSION_STATUS_VALUES = ['todo', 'in-progress', 'done'];
+
+function _getSessionManualStatuses() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SESSION_MANUAL_STATUS_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_e) { return {}; }
+}
+
+function getSessionManualStatus(sid) {
+  if (!sid) return null;
+  const val = _getSessionManualStatuses()[sid];
+  return _SESSION_STATUS_VALUES.includes(val) ? val : null;
+}
+
+function setSessionManualStatus(sid, status) {
+  if (!sid) return;
+  const map = _getSessionManualStatuses();
+  if (status && _SESSION_STATUS_VALUES.includes(status)) {
+    map[sid] = status;
+  } else {
+    delete map[sid];
+  }
+  try { localStorage.setItem(SESSION_MANUAL_STATUS_KEY, JSON.stringify(map)); } catch (_e) {}
+  renderSessionListFromCache();
+}
+
+function _cycleSessionManualStatus(session) {
+  const current = getSessionManualStatus(session.session_id);
+  const idx = _SESSION_STATUS_VALUES.indexOf(current);
+  const next = idx === -1 ? _SESSION_STATUS_VALUES[0]
+    : idx === _SESSION_STATUS_VALUES.length - 1 ? null
+    : _SESSION_STATUS_VALUES[idx + 1];
+  setSessionManualStatus(session.session_id, next);
 }
 
 function _reconcileActiveSessionIdleStateFromList(serverRows) {
@@ -616,8 +654,9 @@ async function newSession(flash, options={}){
         if(s.startsWith('openai'))return 'openai';if(s.startsWith('anthropic')||s.startsWith('claude'))return 'anthropic';
         if(s.startsWith('google')||s.startsWith('gemini'))return 'google';return s;};
       const _familyMismatch=_familyProvider&&_fallbackProvider&&_normProv(_fallbackProvider)!==_familyProvider;
+      const _fallbackIsNamedCustom=String(_fallbackProvider||'').toLowerCase().startsWith('custom:');
       reqBody.model_provider=newModelState.model_provider
-        ||((_bareModel&&!_familyMismatch)?(_fallbackProvider||null):null)
+        ||((_bareModel&&!_familyMismatch&&!_fallbackIsNamedCustom)?(_fallbackProvider||null):null)
         ||null;
     }
     const data=await api('/api/session/new',{method:'POST',body:JSON.stringify(reqBody)});
@@ -1013,6 +1052,7 @@ async function loadSession(sid){
   if(_s&&typeof _syncCtxIndicator==='function'){
     const u=S.lastUsage||{};
     const _pick=(latest,stored,dflt=0)=>latest!=null?latest:(stored!=null?stored:dflt);
+    const _pickPositive=(latest,stored,dflt=0)=>Number(latest)>0?latest:(Number(stored)>0?stored:dflt);
     _syncCtxIndicator({
       input_tokens:      _pick(u.input_tokens,      _s.input_tokens),
       output_tokens:     _pick(u.output_tokens,     _s.output_tokens),
@@ -1020,7 +1060,7 @@ async function loadSession(sid){
       cache_read_tokens: _pick(u.cache_read_tokens, _s.cache_read_tokens),
       cache_write_tokens:_pick(u.cache_write_tokens,_s.cache_write_tokens),
       cache_hit_percent: _pick(u.cache_hit_percent, _s.cache_hit_percent, null),
-      context_length:    _pick(_s.context_length,    u.context_length),
+      context_length:    _pickPositive(u.context_length, _s.context_length),
       last_prompt_tokens:_pick(u.last_prompt_tokens,_s.last_prompt_tokens),
       threshold_tokens:  _pick(_s.threshold_tokens,  u.threshold_tokens),
     });
@@ -1056,13 +1096,15 @@ const _HANDOFF_THRESHOLD = 10;  // conversation rounds
 const _HANDOFF_STORAGE_PREFIX = 'handoff:';
 const _HANDOFF_SUFFIX_DISMISSED_AT = 'dismissed_at';
 const _HANDOFF_SUFFIX_SUMMARY_HANDLED_AT = 'summary_handled_at';
-const _MESSAGING_RAW_SOURCES = new Set(['weixin', 'telegram', 'discord', 'slack', 'email']);
+const _MESSAGING_RAW_SOURCES = new Set(['weixin', 'telegram', 'discord', 'slack', 'email', 'wecom', 'wecom_callback']);
 const _MESSAGING_SOURCE_LABELS = {
   weixin: 'WeChat',
   telegram: 'Telegram',
   discord: 'Discord',
   slack: 'Slack',
   email: 'Email',
+  wecom: 'WeCom',
+  wecom_callback: 'WeCom Callback',
 };
 
 function _isMessagingSession(session) {
@@ -1450,7 +1492,8 @@ function _resolveSessionModelForDisplaySoon(sid){
       if(!model||!S.session||S.session.session_id!==sid) return;
       S.session.model=model;
       S.session.model_provider=provider||null;
-      S.session.context_length=data.session.context_length||0;
+      const resolvedContextLength=data.session.context_length||S.session.context_length||0;
+      S.session.context_length=resolvedContextLength;
       S.session.threshold_tokens=data.session.threshold_tokens||0;
       S.session.last_prompt_tokens=data.session.last_prompt_tokens||0;
       S.session._modelResolutionDeferred=false;
@@ -1465,7 +1508,7 @@ function _resolveSessionModelForDisplaySoon(sid){
           cache_read_tokens:_pick(u.cache_read_tokens,S.session.cache_read_tokens),
           cache_write_tokens:_pick(u.cache_write_tokens,S.session.cache_write_tokens),
           cache_hit_percent:_pick(u.cache_hit_percent,S.session.cache_hit_percent,null),
-          context_length:data.session.context_length||0,
+          context_length:resolvedContextLength||u.context_length||0,
           last_prompt_tokens:_pick(u.last_prompt_tokens,S.session.last_prompt_tokens),
           threshold_tokens:data.session.threshold_tokens||0,
         });
@@ -1542,6 +1585,9 @@ function _messageReloadLimitForSession(sid){
 
 function _syncToolCallsForLoadedMessages(messages, sessionToolCalls){
   const msgs=Array.isArray(messages)?messages:[];
+  // During active streaming, skip — clearing S.toolCalls would lose Activity
+  // and the renderMessages fallback is blocked by S.busy=true.
+  if(S.busy||S.activeStreamId) return;
   const hasMessageToolMetadata=msgs.some(m=>{
     if(!m) return false;
     const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
@@ -1584,7 +1630,13 @@ async function _ensureMessagesLoaded(sid) {
   // toast on every mobile message (SSE/visibility events trigger this reload path
   // more aggressively on mobile).
   let msgs = (data.session.messages || []).filter(m => m && m.role);
-  _syncToolCallsForLoadedMessages(msgs, data.session.tool_calls);
+  // Skip _syncToolCalls when INFLIGHT exists — the INFLIGHT restore path
+  // (loadSession line ~871) will overwrite S.toolCalls from INFLIGHT[sid].toolCalls.
+  // Clearing here and then overwriting is wasteful, and if S.busy becomes true
+  // before the next render, the fallback can't re-derive from messages.
+  if(!(typeof INFLIGHT !== 'undefined' && INFLIGHT && INFLIGHT[sid])){
+    _syncToolCallsForLoadedMessages(msgs, data.session.tool_calls);
+  }
   clearLiveToolCards();
   // #3018: preserve client-side ephemeral turn fields (_turnUsage, _turnDuration,
   // _turnTps, _gatewayRouting, _statusCard) across the loadSession replace.
@@ -1600,6 +1652,11 @@ async function _ensureMessagesLoaded(sid) {
   }
   if(typeof clearVisibleMessageRowCache==='function') clearVisibleMessageRowCache();
   S.messages = msgs;
+  // Expand render window to cover all loaded messages so the next
+  // renderMessages() doesn't hide most of them behind a tiny window.
+  if(typeof _messageRenderableMessageCount==='function'&&typeof _currentMessageRenderWindowSize==='function'){
+    _messageRenderWindowSize=Math.max(_currentMessageRenderWindowSize(), _messageRenderableMessageCount());
+  }
   if(S.session&&S.session.session_id===sid){
     S.session.message_count=Number(data.session.message_count || msgs.length);
     S.lastUsage={...(data.session.last_usage||S.lastUsage||{})};
@@ -2599,6 +2656,22 @@ function _openSessionActionMenu(session, anchorEl){
       }
     ));
   }
+  // Manual status picker (before danger actions)
+  if (!isExternalSession) {
+    const currentStatus = getSessionManualStatus(session.session_id);
+    for (const status of _SESSION_STATUS_VALUES) {
+      menu.appendChild(_buildSessionAction(
+        t('session_status_' + status.replace(/-/g,'_')) || status,
+        '',
+        '',
+        () => {
+          closeSessionActionMenu();
+          setSessionManualStatus(session.session_id, currentStatus === status ? null : status);
+        },
+        currentStatus === status ? 'is-active' : ''
+      ));
+    }
+  }
   if(!isExternalSession){
     if(session.worktree_path){
       menu.appendChild(_buildSessionAction(
@@ -2964,6 +3037,10 @@ async function refreshActiveSessionIfExternallyUpdated(reason){
   if(_activeSessionExternalRefreshInFlight) return;
   if(!S.session || !S.session.session_id) return;
   if(S.busy || S.activeStreamId) return;
+  // Cooldown: don't force-reload immediately after streaming ends — the
+  // "done" event already delivered the final messages. Reloading here would
+  // clear S.toolCalls and lose Activity.
+  if(typeof window !== 'undefined' && window._streamJustFinished) return;
   if(typeof document !== 'undefined' && document.hidden) return;
   const sid = S.session.session_id;
   const localCount = Number(S.session.message_count || (Array.isArray(S.messages)?S.messages.length:0) || 0);
@@ -4093,6 +4170,78 @@ function _resyncSessionVirtualWindowAfterRender(list, expectedScrollTop, virtual
   });
 }
 
+// Top-level so BOTH the sidebar visibility predicate (_sidebarRowHasVisibleMessages,
+// reached via renderSessionListFromCache -> _partitionSidebarSessionRows) and the
+// per-row renderer (_renderOneSession, nested in renderSessionListFromCache) can call
+// it. It was previously declared INSIDE renderSessionListFromCache and relied on
+// function hoisting — but hoisting is scoped to the enclosing function, so the
+// top-level _sidebarRowHasVisibleMessages threw "ReferenceError: _sessionAttentionState
+// is not defined" on every cache render, crashing the sidebar (#3696, regressed in
+// #3672 when _sidebarRowHasVisibleMessages was extracted to top level). Pure function
+// (only its arg `s` plus the i18n global `t`), so hoisting it is safe.
+function _sessionAttentionState(s){
+  const attention=s&&s.attention&&typeof s.attention==='object'?s.attention:null;
+  if(!attention||!attention.kind||!Number.isFinite(Number(attention.count))||Number(attention.count)<=0)return null;
+  const kind=String(attention.kind)==='approval'?'approval':(String(attention.kind)==='clarify'?'clarify':'attention');
+  const count=Math.max(1,Number(attention.count)||1);
+  const labelKey=kind==='approval'?'session_attention_approval':(kind==='clarify'?'session_attention_clarify':'session_attention_generic');
+  const titleKey=kind==='approval'?'session_attention_approval_title':(kind==='clarify'?'session_attention_clarify_title':'session_attention_generic_title');
+  const fallback=kind==='approval'?(count===1?'Approval':`${count} approvals`):(kind==='clarify'?(count===1?'Question':`${count} questions`):(count===1?'Attention':`${count} items`));
+  const titleFallback=kind==='approval'?'Waiting for permission decision':(kind==='clarify'?'Waiting for your answer':'Waiting for user action');
+  const label=(typeof t==='function')?t(labelKey,count):fallback;
+  const title=(typeof t==='function')?t(titleKey,count):titleFallback;
+  return {kind,count,severity:String(attention.severity||''),label,title};
+}
+
+function _sidebarRowHasVisibleMessages(s, activeSidForSidebar){
+  return (s.message_count||0)>0 ||
+    _sessionAttentionState(s) ||
+    _isSessionEffectivelyStreaming(s) ||
+    !!s.active_stream_id ||
+    !!s.pending_user_message ||
+    (activeSidForSidebar&&s.session_id===activeSidForSidebar) ||
+    (S.session&&s.session_id===S.session.session_id&&(S.session.message_count||0)>0);
+}
+
+function _partitionSidebarSessionRows(allMatched, activeSidForSidebar){
+  let webuiSessionCount=0;
+  let cliSessionCount=0;
+  for(const s of allMatched){
+    if(!_sidebarRowHasVisibleMessages(s, activeSidForSidebar)) continue;
+    if(_isCliSession(s)) cliSessionCount++;
+    else webuiSessionCount++;
+  }
+  if(_sessionSourceFilter==='cli' && !window._showCliSessions && cliSessionCount===0){
+    _sessionSourceFilter='webui';
+  }
+  const showCliOnly=_sessionSourceFilter==='cli';
+  const profileFiltered=[];
+  const sessionsRaw=[];
+  let archivedCount=0;
+  for(const s of allMatched){
+    if(!_sidebarRowHasVisibleMessages(s, activeSidForSidebar)) continue;
+    const isCli=_isCliSession(s);
+    if(showCliOnly ? !isCli : isCli) continue;
+    if(s.default_hidden&&!(_activeProject&&_activeProject!==NO_PROJECT_FILTER&&s.project_id===_activeProject)) continue;
+    profileFiltered.push(s);
+    if(_activeProject===NO_PROJECT_FILTER){
+      if(s.project_id) continue;
+    } else if(_activeProject){
+      if(s.project_id!==_activeProject) continue;
+    }
+    if(s.archived) archivedCount++;
+    if(!_showArchived&&s.archived) continue;
+    sessionsRaw.push(s);
+  }
+  return {
+    webuiSessionCount,
+    cliSessionCount,
+    profileFiltered,
+    sessionsRaw,
+    archivedCount,
+  };
+}
+
 function renderSessionListFromCache(){
   // Don't re-render while user is actively renaming a session (would destroy the input)
   if(_renamingSid) return;
@@ -4115,49 +4264,15 @@ function renderSessionListFromCache(){
   // session id into another conversation, that content hit should still appear.
   const searchMatches=_sessionSearchMergeMatches(sidebarRows,searchQueryRaw,_contentSearchResults);
   const allMatched=_ensureActiveSessionRowPresent(searchMatches,sidebarRows);
-  // Keep inactive ephemeral 0-message sessions out of the sidebar — they only
-  // become real once the first message is sent. The server already filters them.
-  // Exception: the active freshly-created chat is injected above so it remains
-  // visible/selected until the user sends the first turn or switches away.
-  const withMessages=allMatched.filter(s=>
-    (s.message_count||0)>0 ||
-    _sessionAttentionState(s) ||
-    _isSessionEffectivelyStreaming(s) ||
-    !!s.active_stream_id ||
-    !!s.pending_user_message ||
-    (activeSidForSidebar&&s.session_id===activeSidForSidebar) ||
-    (S.session&&s.session_id===S.session.session_id&&(S.session.message_count||0)>0)
-  );
-  const webuiSessionCount = withMessages.filter(s=>!_isCliSession(s)).length;
-  const cliSessionCount = withMessages.filter(s=>_isCliSession(s)).length;
-  if(_sessionSourceFilter==='cli' && !window._showCliSessions && cliSessionCount===0){
-    _sessionSourceFilter='webui';
-  }
-  const sourceFiltered = _sessionSourceFilter==='cli'
-    ? withMessages.filter(s=>_isCliSession(s))
-    : withMessages.filter(s=>!_isCliSession(s));
-  // The server is authoritative for profile scoping (#1611): it filters by
-  // active profile when no query param is set, and returns the aggregate when
-  // we send ?all_profiles=1. The renamed-root cross-alias (a row tagged
-  // 'default' matching active 'kinni' when kinni.is_default) lives server-side
-  // in _profiles_match, and a strict-equality client filter would reject those
-  // rows incorrectly. So we trust the wire data and skip the redundant client
-  // filter entirely.
-  const profileFiltered=sourceFiltered.filter(s=>
-    !s.default_hidden||(_activeProject&&_activeProject!==NO_PROJECT_FILTER&&s.project_id===_activeProject)
-  );
-  // Filter by active project. NO_PROJECT_FILTER sentinel asks for sessions
-  // with no project_id; otherwise filter to the matching project_id, or
-  // pass through when no filter is active.
-  const projectFiltered=
-    _activeProject===NO_PROJECT_FILTER
-      ?profileFiltered.filter(s=>!s.project_id)
-      :(_activeProject?profileFiltered.filter(s=>s.project_id===_activeProject):profileFiltered);
-  // Filter archived unless toggle is on
-  const sessionsRaw=_showArchived?projectFiltered:projectFiltered.filter(s=>!s.archived);
+  const {
+    webuiSessionCount,
+    cliSessionCount,
+    profileFiltered,
+    sessionsRaw,
+    archivedCount,
+  }=_partitionSidebarSessionRows(allMatched, activeSidForSidebar);
   const sessions=_attachChildSessionsToSidebarRows(_collapseSessionLineageForSidebar(sessionsRaw), sessionsRaw);
   _syncSidebarExpansionForActiveSession(sessions, activeSidForSidebar);
-  const archivedCount=projectFiltered.filter(s=>s.archived).length;
   const list=$('sessionList');
   const animateRefresh=_sessionListRefreshAnimationPending;
   _sessionListRefreshAnimationPending=false;
@@ -4431,20 +4546,6 @@ function renderSessionListFromCache(){
   const reflowTimeout=animateRefresh?SESSION_LIST_FLIP_TIMEOUT_MS:SESSION_REFLOW_TIMEOUT_MS;
   _pendingSessionReflowPositions=null;
   _playSessionRowsReflowFromPositions(reflowBefore,reflowTimeout,_sessionPrefersReducedMotion);
-  // Note: declared after the groups loop but available via function hoisting.
-  function _sessionAttentionState(s){
-    const attention=s&&s.attention&&typeof s.attention==='object'?s.attention:null;
-    if(!attention||!attention.kind||!Number.isFinite(Number(attention.count))||Number(attention.count)<=0)return null;
-    const kind=String(attention.kind)==='approval'?'approval':(String(attention.kind)==='clarify'?'clarify':'attention');
-    const count=Math.max(1,Number(attention.count)||1);
-    const labelKey=kind==='approval'?'session_attention_approval':(kind==='clarify'?'session_attention_clarify':'session_attention_generic');
-    const titleKey=kind==='approval'?'session_attention_approval_title':(kind==='clarify'?'session_attention_clarify_title':'session_attention_generic_title');
-    const fallback=kind==='approval'?(count===1?'Approval':`${count} approvals`):(kind==='clarify'?(count===1?'Question':`${count} questions`):(count===1?'Attention':`${count} items`));
-    const titleFallback=kind==='approval'?'Waiting for permission decision':(kind==='clarify'?'Waiting for your answer':'Waiting for user action');
-    const label=(typeof t==='function')?t(labelKey,count):fallback;
-    const title=(typeof t==='function')?t(titleKey,count):titleFallback;
-    return {kind,count,severity:String(attention.severity||''),label,title};
-  }
 
   function _renderOneSession(s, isPinnedGroup=false){
     const el=document.createElement('div');
@@ -4552,6 +4653,15 @@ function renderSessionListFromCache(){
         dot.title=proj.name;
         titleRow.appendChild(dot);
       }
+    }
+    const manualStatus = getSessionManualStatus(s.session_id);
+    if (manualStatus) {
+      const statusBadge = document.createElement('span');
+      statusBadge.className = 'session-manual-status session-manual-status--' + manualStatus;
+      statusBadge.textContent = t('session_status_' + manualStatus.replace(/-/g,'_')) || manualStatus;
+      statusBadge.title = t('session_status_click_to_change') || 'Click to change status';
+      statusBadge.onclick = (e) => { e.stopPropagation(); _cycleSessionManualStatus(s); };
+      titleRow.appendChild(statusBadge);
     }
     const density=(window._sidebarDensity==='detailed'?'detailed':'compact');
     const showLineageMetadata=density==='detailed';

@@ -307,9 +307,11 @@ let _messageRenderWindowSize=MESSAGE_RENDER_WINDOW_DEFAULT;
 // Cached visWithIdx array — invalidated when S.messages.length changes.
 let _visWithIdxCache=null;
 let _visWithIdxCacheLen=0;
+let _visWithIdxCacheSrc=null;  // S.messages reference — detects wholesale replacement with same length
 function clearVisibleMessageRowCache(){
   _visWithIdxCache=null;
   _visWithIdxCacheLen=0;
+  _visWithIdxCacheSrc=null;
 }
 function _resetMessageRenderWindow(sid){
   _messageRenderWindowSid=sid||null;
@@ -355,9 +357,10 @@ function _messageRenderableMessageCount(){
   for(const m of (S.messages||[])){
     if(!m||!m.role||m.role==='tool') continue;
     if(_isContextCompactionMessage(m)||_isPreservedCompressionTaskListMessage(m)) continue;
+    if(_isRecoveryControlMessage(m)) continue;
     const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
     const hasTu=Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='tool_use');
-    if(msgContent(m)||m.attachments?.length||(m.role==='assistant'&&(hasTc||hasTu||_messageHasReasoningPayload(m)))) count++;
+    if(msgContent(m)||m._statusCard||m.attachments?.length||(m.role==='assistant'&&(hasTc||hasTu||_messageHasReasoningPayload(m)||_assistantMessageHasVisibleContent(m)))) count++;
   }
   return count;
 }
@@ -416,9 +419,18 @@ async function jumpToSessionStart(){
   _messageUserUnpinned=true;
   _programmaticScroll=true;
   try{
-    if(typeof _ensureAllMessagesLoaded==='function') await _ensureAllMessagesLoaded();
+    // During active streaming, skip full message load — API response won't
+    // include live messages from the current turn, and replacing S.messages
+    // would lose user/assistant/tool messages.
+    if(!(S.busy||S.activeStreamId)){
+      if(typeof _ensureAllMessagesLoaded==='function') await _ensureAllMessagesLoaded();
+    }
     _messageRenderWindowSize=Math.max(_currentMessageRenderWindowSize(),_messageRenderableMessageCount());
-    renderMessages({ preserveScroll:true });
+    // During streaming, skip renderMessages — it rebuilds the DOM but tool card
+    // insertion is blocked by !S.busy, losing Activity until "done" fires.
+    if(!(S.busy||S.activeStreamId)){
+      renderMessages({ preserveScroll:true });
+    }
     requestAnimationFrame(()=>{
       container.scrollTop=0;
       _updateSessionStartJumpButton();
@@ -1376,13 +1388,13 @@ function _addLiveModelsToSelect(provider, models, sel){
   if(!providerGroup){
     providerGroup=document.createElement('optgroup');
     providerGroup.label=provider.charAt(0).toUpperCase()+provider.slice(1)+' (live)';
+    providerGroup.dataset.provider=provider;
     sel.appendChild(providerGroup);
+  }else if(!providerGroup.dataset.provider){
+    providerGroup.dataset.provider=provider;
   }
   const existingIds=new Set([...sel.options].map(o=>o.value));
-  // Normalized dedup: strip @provider: prefix and namespace so
-  // 'minimax/minimax-m2.7' matches '@nous:minimax/minimax-m2.7' (#907).
-  // Named custom IDs (@custom:name:model) have a known two-segment prefix
-  // and must strip both to dedup against bare model IDs (#3478).
+  // Normalized dedup strips provider/custom prefixes and namespaces (#907, #3478).
   const _normId=id=>{
     let s=String(id||'');
     if(s.startsWith('@')&&s.includes(':')){
@@ -1412,6 +1424,7 @@ function _addLiveModelsToSelect(provider, models, sel){
     opt.value=mid;
     opt.textContent=m.label||m.id;
     opt.title='Live model — fetched from provider';
+    opt.dataset.provider=provider;
     providerGroup.appendChild(opt);
     _dynamicModelLabels[mid]=m.label||m.id;
     added++;
@@ -2752,6 +2765,30 @@ function _syncMobileCtxDisplay(state){
   _setCtxCompressButton(compressBtn,state.compressText||'');
 }
 
+function _mergeUsageForCtxIndicator(latest, fallback){
+  const latestObj=(latest&&typeof latest==='object')?latest:{};
+  const fallbackObj=(fallback&&typeof fallback==='object')?fallback:{};
+  const merged={...latestObj};
+  for(const field of [
+    'input_tokens','output_tokens','estimated_cost',
+    'cache_read_tokens','cache_write_tokens','cache_hit_percent',
+    'turn_cache_hit_percent','duration_seconds','tps','gateway_routing',
+  ]){
+    if(merged[field]==null&&fallbackObj[field]!=null){
+      merged[field]=fallbackObj[field];
+    }
+  }
+  if(!(Number(latestObj.context_length)>0)&&Number(fallbackObj.context_length)>0){
+    merged.context_length=fallbackObj.context_length;
+  }
+  for(const field of ['threshold_tokens','last_prompt_tokens']){
+    if(latestObj[field]==null&&fallbackObj[field]!=null){
+      merged[field]=fallbackObj[field];
+    }
+  }
+  return merged;
+}
+
 // Context usage indicator in composer footer
 function _syncCtxIndicator(usage){
   const wrap=$('ctxIndicatorWrap');
@@ -3797,6 +3834,7 @@ function setComposerStatus(t){
 }
 
 let _composerLockState=null;
+let _compressionPlaceholderSaved=null;
 
 function lockComposerForClarify(placeholderText){
   const input=$('msg');
@@ -3868,6 +3906,7 @@ function getComposerPrimaryAction(){
   if(!isBusy) return hasContent?'send':'disabled';
   if(!hasContent){
     if(S.activeStreamId&&typeof cancelStream==='function') return 'stop';
+    if(compressionRunning) return 'queue';
     return 'disabled';
   }
   const explicitAction=_getExplicitBusyCommandAction(msg&&msg.value);
@@ -3912,10 +3951,10 @@ function updateSendBtn(){
   let _btnTitle;
   if(action==='disabled'){
     const _dmsg=$('msg');
-    const _dcompr=typeof isCompressionUiRunning==='function'&&isCompressionUiRunning();
     if(_dmsg&&_dmsg.disabled) _btnTitle=_tt('composer_disabled_clarify','Respond to the clarification request');
-    else if(_dcompr) _btnTitle=_tt('composer_disabled_compression','Waiting for compression to finish');
     else _btnTitle=_tt('composer_disabled_empty','Type a message to send');
+  }else if(action==='queue'&&typeof isCompressionUiRunning==='function'&&isCompressionUiRunning()){
+    _btnTitle=_tt('composer_compression_will_queue','Type a message — it will queue and send after compression');
   }else{
     const _tmap={send:'Send message',queue:'Queue message',interrupt:'Interrupt and send',steer:'Steer current response',stop:'Stop generation'};
     _btnTitle=_tt('composer_'+action,_tmap[action]||'Send message');
@@ -5607,6 +5646,8 @@ async function applyUpdates(){
     return;
   }
   try{
+    const stashConflictMessages=[];
+    const baselineServerIdentity = await _readHealthServerIdentity();
     for(const target of targets){
       const res=await api('/api/updates/apply',{method:'POST',body:JSON.stringify({target}),timeoutMs:120000});
       if(!res.ok){
@@ -5614,11 +5655,16 @@ async function applyUpdates(){
         resetApplyButton(0);
         return;
       }
+      if(res.stash_conflict){
+        stashConflictMessages.push('Update applied ('+target+'): '+(res.message||'Local changes were preserved in git stash.'));
+        if(errEl){errEl.textContent=stashConflictMessages.join('\n\n');errEl.style.display='block';}
+      }
     }
-    showToast('Update applied — restarting…');
+    const stashConflictMessage=stashConflictMessages.join('\n\n');
+    showToast(stashConflictMessage||'Update applied — restarting…',stashConflictMessages.length?10000:undefined,stashConflictMessages.length?'warning':undefined);
     sessionStorage.removeItem('hermes-update-checked');
     sessionStorage.removeItem('hermes-update-dismissed');
-    _waitForServerThenReload();
+    _waitForServerThenReload({baselineServerIdentity});
   }catch(e){
     const msg=_formatUpdateApplyExceptionMessage(e);
     if(errEl){errEl.textContent=msg;errEl.style.display='block';}
@@ -5642,6 +5688,26 @@ function _showUpdateError(target,res){
     forceBtn.style.display='inline-block';
   }
 }
+function _normalizeHealthServerIdentity(rawIdentity){
+  if(rawIdentity===undefined||rawIdentity===null) return null;
+  if(typeof rawIdentity==='string'){
+    const value=rawIdentity.trim();
+    return value ? value : null;
+  }
+  const numeric=Number(rawIdentity);
+  return Number.isFinite(numeric) ? String(numeric) : null;
+}
+
+async function _readHealthServerIdentity() {
+  try {
+    const r=await fetch(new URL('health', document.baseURI||location.href).href,{cache:'no-store'});
+    if(!r.ok) return null;
+    const data=await r.json();
+    return _normalizeHealthServerIdentity(data&&data.server_started_at);
+  } catch (_) {
+    return null;
+  }
+}
 async function forceUpdate(btn){
   const target=btn&&btn.dataset.target;
   if(!target) return;
@@ -5657,6 +5723,7 @@ async function forceUpdate(btn){
   const errEl=$('updateError');
   if(errEl){errEl.style.display='none';}
   try{
+    const baselineServerIdentity = await _readHealthServerIdentity();
     const res=await api('/api/updates/force',{method:'POST',body:JSON.stringify({target}),timeoutMs:120000});
     if(!res.ok){
       if(errEl){errEl.textContent='Force update failed: '+(res.message||'unknown error');errEl.style.display='block';}
@@ -5666,7 +5733,7 @@ async function forceUpdate(btn){
     showToast('Force update applied — restarting…');
     sessionStorage.removeItem('hermes-update-checked');
     sessionStorage.removeItem('hermes-update-dismissed');
-    _waitForServerThenReload();
+    _waitForServerThenReload({baselineServerIdentity});
   }catch(e){
     if(errEl){errEl.textContent='Force update failed: '+e.message;errEl.style.display='block';}
     btn.disabled=false;btn.textContent='Force update';
@@ -5681,6 +5748,7 @@ async function _waitForServerThenReload(opts){
   opts=opts||{};
   const interval=opts.interval||500;
   const maxMs=opts.maxMs||15000;
+  const baselineServerIdentity=_normalizeHealthServerIdentity(opts.baselineServerIdentity);
   window._restartingForUpdate=true;
   const msgEl=$('reconnectMsg');
   const banner=$('reconnectBanner');
@@ -5697,8 +5765,16 @@ async function _waitForServerThenReload(opts){
         let data={};
         try{ data=await r.json(); }catch(_){}
         if(data && data.status==='ok'){
-          location.reload();
-          return;
+          const nextServerIdentity=_normalizeHealthServerIdentity(data&&data.server_started_at);
+          if (baselineServerIdentity===null){
+            location.reload();
+            return;
+          }
+          if (nextServerIdentity!==null && nextServerIdentity !== baselineServerIdentity){
+            location.reload();
+            return;
+          }
+          // Keep polling while the server keeps reporting the same (pre-restart) process identity
         }
       }
     }catch(_){ /* socket closed during restart — retry */ }
@@ -6139,10 +6215,22 @@ function isCompressionUiRunning(){
   const lock=_compressionSessionLock();
   return !!((state&&state.phase==='running') || (lock && S.session && lock===S.session.session_id));
 }
+// Restore the composer placeholder saved when auto-compaction started. Safe to
+// call whenever compression leaves the running state, from any path (clear,
+// non-running setCompressionUi, or a direct window._compressionUi=null in the
+// SSE handler) — it no-ops when nothing was saved. (#3512)
+function _restoreCompressionPlaceholder(){
+  const _input=$('msg');
+  if(_input&&typeof _compressionPlaceholderSaved==='string'){
+    _input.placeholder=_compressionPlaceholderSaved;
+  }
+  _compressionPlaceholderSaved=null;
+}
 function clearCompressionUi(){
   window._compressionUi=null;
   _clearCompressionElapsedTimer();
   _setCompressionSessionLock(null);
+  _restoreCompressionPlaceholder();
   renderCompressionUi();
 }
 function setCompressionUi(state){
@@ -6156,8 +6244,19 @@ function setCompressionUi(state){
   }
   window._compressionUi=nextState;
   if(nextState.sessionId) _setCompressionSessionLock(nextState.sessionId);
-  if(nextState.automatic&&nextState.phase==='running') _startCompressionElapsedTimer();
-  else _clearCompressionElapsedTimer();
+  if(nextState.automatic&&nextState.phase==='running'){
+    _startCompressionElapsedTimer();
+    const _input=$('msg');
+    if(_input&&_compressionPlaceholderSaved===null){
+      _compressionPlaceholderSaved=_input.placeholder;
+      _input.placeholder=typeof t==='function'?t('composer_compression_will_queue')||'Type a message — it will queue and send after compression':'Type a message — it will queue and send after compression';
+    }
+  } else {
+    _clearCompressionElapsedTimer();
+    // Leaving the running state (e.g. setCompressionUi(done)) must restore the
+    // placeholder too — not only clearCompressionUi(). (#3512 leak fix)
+    _restoreCompressionPlaceholder();
+  }
   renderCompressionUi();
 }
 function _compressionCardsHtml(state){
@@ -6359,7 +6458,10 @@ function _collectHandoffSummaryStates(messages){
 function _isContextCompactionMessage(m){
   if(!m||!m.role||m.role==='tool') return false;
   const text=msgContent(m)||String(m.content||'');
-  return /^\s*\[context compaction/i.test(text) || /^\s*context compaction/i.test(text);
+  return _isContextCompactionText(text);
+}
+function _isContextCompactionText(text){
+  return /^\s*\[context compaction/i.test(String(text||'')) || /^\s*context compaction/i.test(String(text||''));
 }
 function _isPreservedCompressionTaskListMarkerText(text){
   return /^\s*\[your active task list was preserved across context compression\]/i.test(String(text||''));
@@ -6436,6 +6538,9 @@ function _latestCompressionReferenceMessage(messages, summaryText=''){
     if(contentNorm.includes(summaryNorm)) return {message:m, rawIdx:i};
   }
   return {message:null, rawIdx:-1};
+}
+function _shouldShowSettledCompressionReference(referenceText){
+  return !!String(referenceText||'').trim() && !_isContextCompactionText(referenceText);
 }
 function _compressionReferenceCardHtml(text, open=false){
   const copy=_engineAwareCompressionCopy();
@@ -6957,18 +7062,19 @@ function renderMessages(options){
   const referenceText=referenceMessage
     ? msgContent(referenceMessage)||String(referenceMessage.content||'')
     : sessionCompressionSummary;
-  const referenceNode=(!compressionState && !!referenceText && (sessionCompressionAnchor!==null || sessionCompressionAnchorKey || sessionCompressionSummary))
+  const referenceNode=(!compressionState && _shouldShowSettledCompressionReference(referenceText) && (sessionCompressionAnchor!==null || sessionCompressionAnchorKey || sessionCompressionSummary))
     ? (()=>{const row=document.createElement('div');row.innerHTML=`<div class="compression-turn"><div class="compression-turn-blocks">${_compressionReferenceCardHtml(referenceText,false)}${_preservedCompressionTaskListCardsHtml(preservedCompressionTaskMessages)}</div></div>`;return row.firstElementChild;})()
     : null;
   let preservedCompressionTaskCardsAttached=!!referenceNode;
   // Cache visWithIdx so expanding the render window (Load earlier) doesn't
   // re-scan S.messages from scratch.  Invalidate only when the message array
   // length changes — i.e. new messages arrived or session was truncated.
-  if(!_visWithIdxCache || _visWithIdxCacheLen !== S.messages.length){
+  if(!_visWithIdxCache || _visWithIdxCacheLen !== S.messages.length || _visWithIdxCacheSrc !== S.messages){
     const rebuilt=[];
     let ri=0;
     for(const m of S.messages){
       if(!m||!m.role||m.role==='tool'){ri++;continue;}
+      if(_isContextCompactionMessage(m)){ri++;continue;}
       if(_isPreservedCompressionTaskListMessage(m)){ri++;continue;}
       if(_isRecoveryControlMessage(m)){ri++;continue;}
       const hasTc=Array.isArray(m.tool_calls)&&m.tool_calls.length>0;
@@ -6979,6 +7085,7 @@ function renderMessages(options){
     }
     _visWithIdxCache=rebuilt;
     _visWithIdxCacheLen=S.messages.length;
+    _visWithIdxCacheSrc=S.messages;
   }
   const visWithIdx=_visWithIdxCache;
   const preservedCompressionRawIdxs=[];
@@ -7055,6 +7162,39 @@ function renderMessages(options){
     if(role==='user') lastQuestionRawIdx=entry.rawIdx;
     else if(role==='assistant') questionRawIdxByAssistantRawIdx.set(entry.rawIdx,lastQuestionRawIdx);
   }
+  // #3709 (defect B): build a per-turn combined visible-answer text so the
+  // thinking echo-strip can de-dupe a thinking-only message (whose own visible
+  // body is empty) against the answer prose carried by a SIBLING message in the
+  // same turn. A turn = the run of assistant messages between two user messages.
+  // Map every assistant rawIdx in a run to the run's combined visible text.
+  const _turnVisibleTextByRawIdx=new Map();
+  {
+    let _run=[]; let _runText=[];
+    const _flush=()=>{
+      if(_run.length){
+        const combined=_runText.join('\n\n');
+        for(const ri of _run) _turnVisibleTextByRawIdx.set(ri, combined);
+      }
+      _run=[]; _runText=[];
+    };
+    for(const entry of renderVisWithIdx){
+      const em=entry&&entry.m; const role=em&&em.role;
+      if(role==='assistant'){
+        _run.push(entry.rawIdx);
+        // Visible prose = content with any leading <think>…</think> /channel-thought
+        // block stripped (the same blocks the per-message extractor removes below).
+        let vis=typeof em.content==='string'?em.content:'';
+        vis=vis.replace(/^\s*<think>[\s\S]*?<\/think>\s*/,'')
+               .replace(/^\s*<\|channel\|?>thought\n?[\s\S]*?<channel\|>\s*/,'')
+               .replace(/^\s*<\|turn\|>thinking\n[\s\S]*?<turn\|>\s*/,'').trim();
+        if(vis) _runText.push(vis);
+      }else{
+        _flush();
+      }
+    }
+    _flush();
+  }
+
   const assistantSegments=new Map();
   const assistantThinking=new Map();
   const userRows=new Map();
@@ -7126,6 +7266,13 @@ function renderMessages(options){
     const displayContent=isUser?_stripAttachedFilesMarkerForDisplay(_stripWorkspaceDisplayPrefix(content)):content;
     if(thinkingText&&!isUser){
       thinkingText=_stripVisibleAssistantEchoFromThinking(thinkingText, displayContent);
+      // #3709 (defect B): if this message's own visible body didn't strip the
+      // echo (e.g. a thinking-only message whose answer prose lives on a sibling
+      // message in the same turn), also strip against the turn's combined answer.
+      const turnVisible=_turnVisibleTextByRawIdx.get(rawIdx);
+      if(thinkingText&&turnVisible&&turnVisible!==displayContent){
+        thinkingText=_stripVisibleAssistantEchoFromThinking(thinkingText, turnVisible);
+      }
     }
     const isLastAssistant=!isUser&&vi===renderVisWithIdx.length-1;
     const nextRendered=renderVisWithIdx[vi+1];
@@ -7174,17 +7321,7 @@ function renderMessages(options){
     const footHtml = `<div class="msg-foot">${timeHtml}<span class="msg-actions">${editBtn}${ttsBtn}${forkBtn}${copyBtn}${retryBtn}</span>${questionJumpBtn}</div>`;
 
     if(_isContextCompactionMessage(m)){
-      if(compressionState || referenceNode){
-        continue;
-      }else{
-        currentAssistantTurn=null;
-        const row=document.createElement('div');
-        const preservedForThisCard=preservedCompressionTaskCardsAttached?[]:preservedCompressionTaskMessages;
-        row.innerHTML=_contextCompactionMessageHtml(m, tsTitle, preservedForThisCard);
-        if(preservedForThisCard.length) preservedCompressionTaskCardsAttached=true;
-        inner.appendChild(row.firstElementChild);
-        continue;
-      }
+      continue;
     }
 
     if(isUser){
@@ -7297,7 +7434,7 @@ function renderMessages(options){
     }
     inner.appendChild(node);
   }
-  const preservedOnlyNode=(!preservedCompressionTaskCardsAttached&&(!referenceMessage||compressionState)&&preservedCompressionTaskMessages.length)
+  const preservedOnlyNode=(!preservedCompressionTaskCardsAttached&&(!referenceNode||compressionState)&&preservedCompressionTaskMessages.length)
     ? (()=>{const row=document.createElement('div');row.innerHTML=`<div class="compression-turn"><div class="compression-turn-blocks">${_preservedCompressionTaskListCardsHtml(preservedCompressionTaskMessages)}</div></div>`;return row.firstElementChild;})()
     : null;
   const preservedOnlyAnchor=preservedCompressionRawIdxs.length
@@ -7433,7 +7570,11 @@ function renderMessages(options){
     });
     if(derived.length) S.toolCalls=derived;
   }
-  if(!S.busy){
+  // Render tool cards: allow during streaming when S.toolCalls is already
+  // populated (e.g. from INFLIGHT restore or SSE events). Only the fallback
+  // derivation above is blocked by S.busy — DOM insertion should proceed
+  // whenever tool cards exist.
+  if(!S.busy || (S.toolCalls&&S.toolCalls.length)){
     inner.querySelectorAll('.tool-call-group:not([data-compression-card]),.tool-card-row:not([data-compression-card]),.agent-activity-thinking:not([data-live-thinking="1"])').forEach(el=>el.remove());
     const byAssistant = {};
     for(const tc of (S.toolCalls||[])){
@@ -7444,22 +7585,80 @@ function renderMessages(options){
     const assistantIdxs=[...assistantSegments.keys()].sort((a,b)=>a-b);
     const anchorInsertAfter = new Map();
     if(isSimplifiedToolCalling()){
+      // Shared anchor resolver: maps an activity index to the assistant segment
+      // its Activity group will anchor on. The group-render path falls back to a
+      // nearby earlier segment when an index has no directly-rendered segment
+      // (legacy/rebased assistant_msg_idx). The inline-suppression precompute MUST
+      // use the SAME resolution, or a fallback-anchored group's turn won't be in
+      // turnsWithActivityGroup and the thinking renders twice (Codex re-gate).
+      const _anchorRowForActivityIdx=(aIdx)=>{
+        let row=assistantSegments.get(aIdx)||null;
+        if(!row&&assistantIdxs.length){
+          if(aIdx<assistantIdxs[0]) return null;
+          const fallbackIdx=[...assistantIdxs].reverse().find(idx=>idx<=aIdx);
+          row=fallbackIdx!==undefined?assistantSegments.get(fallbackIdx):assistantSegments.get(assistantIdxs[assistantIdxs.length-1]);
+        }
+        return row;
+      };
+      // #3709: a turn (one .assistant-turn, spanning every assistant segment
+      // between two user messages) can contain BOTH a tool-bearing message and a
+      // trailing thinking-only message. The tool message builds an Activity group
+      // that already carries the turn's thinking at its top; if the thinking-only
+      // sibling ALSO renders its thinking inline, the card shows twice. Precompute
+      // the set of turn nodes that have any tool card so the inline branch can
+      // skip turns that already own an Activity group.
+      const turnsWithActivityGroup=new Set();
+      // Per-turn merged thinking: a tool-bearing turn's Activity group must carry
+      // ALL of that turn's thinking — including a trailing thinking-only sibling
+      // whose inline card we suppress below (#3709 A1). Rendering only the tool
+      // message's own assistantThinking entry would silently DROP a sibling's
+      // distinct reasoning. Aggregate every assistantThinking entry by turn,
+      // de-duped and in index order, and render that once in the group.
+      const turnThinkingParts=new Map(); // turnNode -> [text,...]
+      const _addTurnThinking=(idx)=>{
+        if(!assistantThinking.has(idx)) return;
+        const seg=_anchorRowForActivityIdx(idx);
+        const turn=seg?seg.closest('.assistant-turn'):null;
+        if(!turn) return;
+        const txt=String(assistantThinking.get(idx)||'').trim();
+        if(!txt) return;
+        const arr=turnThinkingParts.get(turn)||[];
+        if(!arr.includes(txt)) arr.push(txt);
+        turnThinkingParts.set(turn, arr);
+      };
+      for(const tcIdx of Object.keys(byAssistant).map(k=>parseInt(k))){
+        if(!(byAssistant[tcIdx]||[]).length) continue;
+        const tcSeg=_anchorRowForActivityIdx(tcIdx);
+        const tcTurn=tcSeg?tcSeg.closest('.assistant-turn'):null;
+        if(tcTurn) turnsWithActivityGroup.add(tcTurn);
+      }
+      // Aggregate thinking for every assistant idx that has it (tool-bearing or not).
+      for(const tIdx of assistantThinking.keys()) _addTurnThinking(tIdx);
+      const _renderedTurnThinking=new Set();
       const activityIdxs=[...new Set([...Object.keys(byAssistant).map(k=>parseInt(k)), ...assistantThinking.keys()])].sort((a,b)=>a-b);
       for(const aIdx of activityIdxs){
         const cards=byAssistant[aIdx]||[];
         if(!cards.length&&assistantThinking.has(aIdx)){
-          const anchorRow=assistantSegments.get(aIdx);
-          if(anchorRow&&window._showThinking!==false){
-            anchorRow.insertAdjacentHTML('beforeend',_thinkingCardHtml(assistantThinking.get(aIdx)));
+          // Thinking-only message. Render its thinking inline ONLY when the turn
+          // has no Activity group at all (#3592 — a genuinely thinking-only turn
+          // must not bury its thinking in a collapsed group). If a sibling
+          // tool-message in the same turn built a group, that group carries the
+          // turn's thinking (including THIS message's, via turnThinkingParts) —
+          // don't emit a duplicate inline card here (#3709 A).
+          const anchorRow=_anchorRowForActivityIdx(aIdx);
+          const anchorTurn=anchorRow?anchorRow.closest('.assistant-turn'):null;
+          if(anchorRow&&window._showThinking!==false&&!(anchorTurn&&turnsWithActivityGroup.has(anchorTurn))){
+            // Insert the thinking card BEFORE the answer body + msg-foot footer
+            // (the segment already has them appended), so it reads above the
+            // answer rather than orphaned below the "Done in …" line (#3709 A2).
+            const bodyEl=anchorRow.querySelector('.msg-body,.msg-foot');
+            const cardHtml=_thinkingCardHtml(assistantThinking.get(aIdx));
+            if(bodyEl) bodyEl.insertAdjacentHTML('beforebegin',cardHtml);
+            else anchorRow.insertAdjacentHTML('beforeend',cardHtml);
           }
           continue;
         }
-        let anchorRow=assistantSegments.get(aIdx)||null;
-        if(!anchorRow&&assistantIdxs.length){
-          if(aIdx<assistantIdxs[0]) continue;
-          const fallbackIdx=[...assistantIdxs].reverse().find(idx=>idx<=aIdx);
-          anchorRow=fallbackIdx!==undefined?assistantSegments.get(fallbackIdx):assistantSegments.get(assistantIdxs[assistantIdxs.length-1]);
-        }
+        let anchorRow=_anchorRowForActivityIdx(aIdx);
         if(!anchorRow) continue;
         const anchorParent=anchorRow.parentElement;
         let insertAfterNode = anchorInsertAfter.get(anchorRow) || anchorRow;
@@ -7468,9 +7667,13 @@ function renderMessages(options){
         if(sourceMsg._turnDuration!==undefined) group.setAttribute('data-turn-duration', String(sourceMsg._turnDuration));
         const body=group&&group.querySelector('.tool-call-group-body');
         if(!body) continue;
-        const thinkingText=assistantThinking.get(aIdx);
-        if(thinkingText){
-          body.appendChild(_thinkingActivityNode(thinkingText, false));
+        // Render the TURN's merged thinking once (covers this message's own
+        // thinking + any suppressed thinking-only sibling in the same turn, #3709).
+        const groupTurn=anchorRow?anchorRow.closest('.assistant-turn'):null;
+        const mergedThinking=(groupTurn&&turnThinkingParts.get(groupTurn)||[]).join('\n\n').trim();
+        if(mergedThinking&&!(groupTurn&&_renderedTurnThinking.has(groupTurn))){
+          body.appendChild(_thinkingActivityNode(mergedThinking, false));
+          if(groupTurn) _renderedTurnThinking.add(groupTurn);
         }
         for(const tc of cards){
           body.appendChild(buildToolCard(tc));
@@ -7624,6 +7827,28 @@ function _toolDisplayName(tc){
   if(name==='delegate_task') return 'Delegate task';
   return name;
 }
+
+// Activity-summary detection for persisted memory/skill writes (#3340, #3544).
+// Action vocabularies match the real agent tool enums:
+//   memory.action      = add | replace | remove   (add/replace persist content → "saved")
+//   skill_manage.action= create | patch | edit | delete | write_file | remove_file
+//                        (create/patch/edit/write_file mutate a skill → "updated")
+// Deletions (memory 'remove', skill 'delete'/'remove_file') are intentionally
+// excluded so the "saved"/"updated" label verbs stay accurate; running/errored
+// calls are excluded so only completed writes are counted.
+const _MEMORY_SAVE_ACTIONS=new Set(['add','replace']);
+const _SKILL_UPDATE_ACTIONS=new Set(['create','patch','edit','write_file']);
+function _tcAction(tc){
+  return String((tc&&tc.args&&tc.args.action)||'').toLowerCase();
+}
+function _isMemorySave(tc){
+  if(!tc||tc.name!=='memory'||tc.done===false||tc.is_error) return false;
+  return _MEMORY_SAVE_ACTIONS.has(_tcAction(tc));
+}
+function _isSkillUpdate(tc){
+  if(!tc||tc.name!=='skill_manage'||tc.done===false||tc.is_error) return false;
+  return _SKILL_UPDATE_ACTIONS.has(_tcAction(tc));
+}
 function toolIcon(name){
   const icons={
     terminal:        li('terminal'),
@@ -7750,6 +7975,15 @@ function buildToolCard(tc){
         </div>`:''}
       </div>`:''}
     </div>`;
+  row._tcData = tc;
+  // Durable classification flags: _tcData (a JS property) does NOT survive the
+  // outerHTML/innerHTML snapshot+restore the live tool-call group uses on session
+  // switch/restore, which would make _syncToolCallGroupSummary re-count restored
+  // memory/skill rows as generic tools and silently drop the suffix. Mirror the
+  // classification onto data-* attributes so it survives serialization. (#3544)
+  if(_isMemorySave(tc)){row.setAttribute('data-memory-save','1');row.removeAttribute('data-skill-update');}
+  else if(_isSkillUpdate(tc)){row.setAttribute('data-skill-update','1');row.removeAttribute('data-memory-save');}
+  else {row.removeAttribute('data-memory-save');row.removeAttribute('data-skill-update');}
   return row;
 }
 
@@ -7799,10 +8033,25 @@ function _syncToolCallGroupSummary(group){
   const label=group.querySelector('.tool-call-group-label');
   const durationEl=group.querySelector('.tool-call-group-duration');
   if(label){
+    const rows=Array.from(group.querySelectorAll('.tool-card-row'));
+    // Prefer the live _tcData classification; fall back to the durable data-*
+    // flags for rows restored from an HTML snapshot (which drops JS properties).
+    const isMem=r=>_isMemorySave(r._tcData)||r.getAttribute('data-memory-save')==='1';
+    const isSkill=r=>_isSkillUpdate(r._tcData)||r.getAttribute('data-skill-update')==='1';
+    const memCount=rows.filter(isMem).length;
+    const skillCount=rows.filter(r=>!isMem(r)&&isSkill(r)).length;
+    const otherCount=Math.max(0, toolCount-memCount-skillCount);
+    let suffix='';
+    if(memCount) suffix+=`, ${memCount} ${memCount===1?'memory':'memories'} saved`;
+    if(skillCount) suffix+=`, ${skillCount} ${skillCount===1?'skill':'skills'} updated`;
+    const toolsPart=otherCount?`${otherCount} tool${otherCount===1?'':'s'}`:'';
     if(group.getAttribute('data-live-tool-call-group')==='1'){
-      label.textContent=toolCount?`Activity: ${toolCount} tool${toolCount===1?'':'s'}`:'Activity · Running';
-    }else if(toolCount) label.textContent=`Activity: ${toolCount} tool${toolCount===1?'':'s'}`;
-    else label.textContent='Activity';
+      if(toolsPart) label.textContent=`Activity: ${toolsPart}${suffix}`;
+      else if(suffix) label.textContent=`Activity: ${suffix.slice(2)}`;
+      else label.textContent='Activity · Running';
+    }else if(toolsPart||suffix){
+      label.textContent=toolsPart?`Activity: ${toolsPart}${suffix}`:`Activity: ${suffix.slice(2)}`;
+    }else label.textContent='Activity';
     label.setAttribute('data-sweep-label', label.textContent);
   }
   if(durationEl){
@@ -8484,7 +8733,7 @@ function loadPdfInline(container){
             el.outerHTML=`<div class="pdf-preview-fallback"><a class="msg-media-link" href="api/media?path=${encodeURIComponent(path)}&download=1" download="${esc(fname)}">📎 ${esc(fname)}</a><br><span style="color:var(--muted);font-size:12px">${t('pdf_too_large')}</span></div>`;
             return;
           }
-          return pdfjsLib.getDocument({data:buf}).promise;
+          return pdfjsLib.getDocument({data:buf, isEvalSupported:false}).promise;
         })
         .then(pdf=>{
           if(!pdf) return;
@@ -8517,16 +8766,14 @@ function loadPdfInline(container){
       loadPdf(window._pdfjsLib);
     } else if(!_pdfjsLoading){
       _pdfjsLoading=true;
+      const _pdfSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.min.mjs';
+      const _pdfWorker='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs';
+      const _pdfBlob=new Blob([`import*as p from'${_pdfSrc}';p.GlobalWorkerOptions.workerSrc='${_pdfWorker}';window._pdfjsLib=p;window._pdfjsReady=true;window.dispatchEvent(new Event('pdfjs-ready'));`],{type:'application/javascript'});
       const s=document.createElement('script');
-      s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.min.mjs';
       s.type='module';
-      s.textContent=`
-        import * as pdfjsLib from '${s.src}';
-        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.155/build/pdf.worker.min.mjs';
-        window._pdfjsLib=pdfjsLib;
-        window._pdfjsReady=true;
-        window.dispatchEvent(new Event('pdfjs-ready'));
-      `;
+      const _pdfBlobUrl=URL.createObjectURL(_pdfBlob);
+      s.src=_pdfBlobUrl;
+      s.onload=()=>URL.revokeObjectURL(_pdfBlobUrl);
       document.head.appendChild(s);
       window.addEventListener('pdfjs-ready',()=>{ _pdfjsReady=true; loadPdf(window._pdfjsLib); },{once:true});
       setTimeout(()=>{

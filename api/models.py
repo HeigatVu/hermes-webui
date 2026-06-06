@@ -572,6 +572,7 @@ class Session:
                  truncation_watermark=None,
                  gateway_routing=None, gateway_routing_history=None,
                  llm_title_generated: bool=False,
+                 manual_title: bool=False,
                 parent_session_id: str=None,
                 worktree_path=None,
                 worktree_branch=None,
@@ -620,6 +621,7 @@ class Session:
         self.gateway_routing = gateway_routing if isinstance(gateway_routing, dict) else None
         self.gateway_routing_history = gateway_routing_history if isinstance(gateway_routing_history, list) else []
         self.llm_title_generated = bool(llm_title_generated)
+        self.manual_title = bool(manual_title)
         self.parent_session_id = parent_session_id
         self.worktree_path = str(Path(worktree_path).expanduser().resolve()) if worktree_path else None
         self.worktree_branch = str(worktree_branch) if worktree_branch else None
@@ -684,7 +686,7 @@ class Session:
             'compression_anchor_details', 'context_engine_state',
             'context_length', 'threshold_tokens', 'last_prompt_tokens',
             'truncation_watermark',
-            'gateway_routing', 'gateway_routing_history', 'llm_title_generated',
+            'gateway_routing', 'gateway_routing_history', 'llm_title_generated', 'manual_title',
             'parent_session_id',
             'worktree_path', 'worktree_branch', 'worktree_repo_root', 'worktree_created_at',
             'is_cli_session', 'source_tag', 'raw_source', 'session_source', 'source_label', 'read_only',
@@ -890,6 +892,7 @@ class Session:
             'last_prompt_tokens': self.last_prompt_tokens,
             'gateway_routing': self.gateway_routing,
             'gateway_routing_history': self.gateway_routing_history,
+            'manual_title': self.manual_title,
             # Only emit 'parent_session_id' when set (the /branch fork link, #1342).
             # Sessions without a fork must not leak None — see test_session_lineage_metadata_api.
             **({'parent_session_id': self.parent_session_id} if self.parent_session_id else {}),
@@ -2366,11 +2369,11 @@ def new_session(workspace=None, model=None, profile=None, model_provider=None, p
         s.save()
     return s
 
-def _hide_from_default_sidebar(session: dict) -> bool:
+def _hide_from_default_sidebar(session: dict, *, show_cron: bool = False) -> bool:
     """Return True for internal/background sessions hidden from the default list."""
     sid = str(session.get('session_id') or '')
     source = session.get('source_tag') or session.get('source')
-    if source == 'cron' or sid.startswith('cron_'):
+    if not show_cron and (source == 'cron' or sid.startswith('cron_')):
         return True
     if bool(session.get('pre_compression_snapshot')):
         return not bool(session.get('_show_pre_compression_snapshot'))
@@ -2723,6 +2726,71 @@ def _active_state_db_path() -> Path:
     return hermes_home / 'state.db'
 
 
+def _agent_state_db_path(*, profile=None) -> Path | None:
+    """Return agent ``state.db`` for *profile*, or ``None`` when unavailable."""
+    if isinstance(profile, str) and profile:
+        db_path = _get_profile_home(profile) / 'state.db'
+        if not db_path.exists():
+            db_path = _active_state_db_path()
+    else:
+        db_path = _active_state_db_path()
+    if not db_path.exists():
+        return None
+    return db_path
+
+
+def agent_session_rows_existing(
+    session_ids: list[str] | set[str] | frozenset[str],
+    *,
+    profile=None,
+) -> frozenset[str]:
+    """Return session ids confirmed present in the agent ``sessions`` table.
+
+    Used by the sidebar orphan-prune path (#3238) to batch existence probes
+    instead of opening one SQLite connection per candidate row.
+
+    Degrades safely to ``frozenset(wanted)`` (assume all present) on any error,
+    when the DB is missing, or when the ``sessions`` table is absent — matching
+    ``agent_session_row_exists()`` so a transient failure never causes pruning.
+    """
+    wanted = {str(sid).strip() for sid in (session_ids or []) if str(sid or "").strip()}
+    if not wanted:
+        return frozenset()
+    try:
+        import sqlite3
+    except ImportError:
+        return frozenset(wanted)
+    db_path = _agent_state_db_path(profile=profile)
+    if db_path is None:
+        return frozenset(wanted)
+    try:
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(sessions)")
+            cols = {str(row[1]) for row in cur.fetchall()}
+            if 'id' not in cols:
+                return frozenset(wanted)
+            existing: set[str] = set()
+            ids = list(wanted)
+            chunk_size = 500
+            for i in range(0, len(ids), chunk_size):
+                chunk = ids[i:i + chunk_size]
+                placeholders = ','.join('?' * len(chunk))
+                cur.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                    chunk,
+                )
+                existing.update(str(row[0]).strip() for row in cur.fetchall())
+            return frozenset(existing)
+    except Exception:
+        logger.debug(
+            "agent_session_rows_existing probe failed for %d ids",
+            len(wanted),
+            exc_info=True,
+        )
+        return frozenset(wanted)
+
+
 def agent_session_row_exists(session_id: str, *, profile=None) -> bool:
     """Return True if ``session_id`` still has a backing row in the agent state.db.
 
@@ -2739,31 +2807,7 @@ def agent_session_row_exists(session_id: str, *, profile=None) -> bool:
     sid = str(session_id or "").strip()
     if not sid:
         return False
-    try:
-        import sqlite3
-    except ImportError:
-        return True
-    if isinstance(profile, str) and profile:
-        db_path = _get_profile_home(profile) / 'state.db'
-        if not db_path.exists():
-            db_path = _active_state_db_path()
-    else:
-        db_path = _active_state_db_path()
-    if not db_path.exists():
-        # No agent DB at all on this instance — can't claim the row is gone.
-        return True
-    try:
-        with closing(sqlite3.connect(str(db_path))) as conn:
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info(sessions)")
-            cols = {str(row[1]) for row in cur.fetchall()}
-            if 'id' not in cols:
-                return True
-            cur.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (sid,))
-            return cur.fetchone() is not None
-    except Exception:
-        logger.debug("agent_session_row_exists probe failed for %s", sid, exc_info=True)
-        return True
+    return sid in agent_session_rows_existing([sid], profile=profile)
 
 
 def _sidebar_title_is_generic_webui(title: str | None) -> bool:
@@ -3909,6 +3953,14 @@ def _session_message_merge_key(msg: dict):
     message_identity = msg.get("id") or msg.get("message_id")
     if message_identity:
         return ("message_id", str(message_identity))
+    # Include tool_calls so assistant messages that invoke different tools
+    # (but share identical empty content and same-second timestamp) are not
+    # collapsed by the merge-key guard at line ~4216.  Without this,
+    # all tool-calling messages map to the same legacy key and the
+    # timestamp<=max_sidecar_timestamp blanket-skip at line ~4218 drops
+    # every state.db tool-call after the first one registered by the sidecar.
+    _tc = msg.get("tool_calls")
+    _tc_key = json.dumps(_tc, sort_keys=True, default=str) if _tc else ""
     return (
         "legacy",
         str(msg.get("role") or ""),
@@ -3916,6 +3968,7 @@ def _session_message_merge_key(msg: dict):
         _normalized_message_timestamp_for_key(msg.get("timestamp")),
         str(msg.get("tool_call_id") or ""),
         str(msg.get("tool_name") or msg.get("name") or ""),
+        _tc_key,
     )
 
 
@@ -3932,6 +3985,11 @@ def _session_message_dedup_key(msg: dict):
     message_identity = msg.get("id") or msg.get("message_id")
     if message_identity:
         return ("message_id", str(message_identity))
+    # Include tool_calls in the key so assistant messages that carry
+    # different tool invocations (but identical empty content/timestamp)
+    # are never collapsed into one.  (#3346 regression)
+    _tc = msg.get("tool_calls")
+    _tc_key = json.dumps(_tc, sort_keys=True, default=str) if _tc else ""
     return (
         "legacy",
         str(msg.get("role") or ""),
@@ -3939,6 +3997,7 @@ def _session_message_dedup_key(msg: dict):
         str(msg.get("timestamp") or ""),
         str(msg.get("tool_call_id") or ""),
         str(msg.get("tool_name") or msg.get("name") or ""),
+        _tc_key,
     )
 
 
@@ -3966,9 +4025,16 @@ def _session_message_content_key(msg: dict):
 def _session_message_visible_key(msg: dict):
     if not isinstance(msg, dict):
         return ("non_dict", repr(msg))
+    # Include tool_calls so assistant messages that invoke different tools
+    # (but share identical empty content) are not collapsed by sidecar
+    # prefix matching.  Without this, all tool-calling messages map to
+    # ("assistant", "") and the merge treats state.db rows as replays.
+    _tc = msg.get("tool_calls")
+    _tc_key = json.dumps(_tc, sort_keys=True, default=str) if _tc else ""
     return (
         str(msg.get("role") or ""),
         _normalized_session_message_content(msg),
+        _tc_key,
     )
 
 
@@ -3977,8 +4043,9 @@ def _build_visible_duplicate_lookup(visible_keys: set[tuple]) -> dict:
     loose_by_key = {}
     for key in visible_keys:
         try:
-            role, content = key
-        except (TypeError, ValueError):
+            role = key[0]
+            content = key[1]
+        except (TypeError, IndexError):
             continue
         if not content:
             continue
@@ -3990,24 +4057,27 @@ def _build_visible_duplicate_lookup(visible_keys: set[tuple]) -> dict:
 def _matching_visible_duplicate(visible_key: tuple, visible_keys: set[tuple], lookup: dict | None = None):
     if visible_key in visible_keys:
         return visible_key
-    role, content = visible_key
+    role = visible_key[0]
+    content = visible_key[1] if len(visible_key) > 1 else ""
     if not content:
         return None
     if lookup is None:
         lookup = _build_visible_duplicate_lookup(visible_keys)
     loose_content = None
-    for existing_role, existing_content in lookup.get("by_role", {}).get(role, []):
+    for existing_key in lookup.get("by_role", {}).get(role, []):
+        existing_role = existing_key[0]
+        existing_content = existing_key[1] if len(existing_key) > 1 else ""
         if role != existing_role or not existing_content:
             continue
         if content in existing_content or existing_content in content:
-            return (existing_role, existing_content)
+            return existing_key
         if loose_content is None:
             loose_content = _loose_session_message_content(content)
-        loose_existing = lookup.get("loose_by_key", {}).get((existing_role, existing_content), "")
+        loose_existing = lookup.get("loose_by_key", {}).get(existing_key, "")
         if loose_content and loose_existing and (
             loose_content in loose_existing or loose_existing in loose_content
         ):
-            return (existing_role, existing_content)
+            return existing_key
     return None
 
 
@@ -4209,7 +4279,13 @@ def merge_session_messages_append_only(
             if key in seen_message_keys and key[0] == "message_id":
                 continue
             if not (isinstance(key, tuple) and key[:1] == ("message_id",)):
-                continue
+                # Legacy key within sidecar timestamp range — only skip if
+                # this exact merge_key was already registered by the sidecar.
+                # Different tool_calls produce different merge_keys even with
+                # identical content/timestamp, so an unchecked continue here
+                # would drop legitimately distinct turns.  (#3346 / PR #3665)
+                if key in seen_message_keys:
+                    continue
         if key in seen_message_keys and key[0] == "message_id":
             continue
         matched_visible_key = _matching_visible_duplicate(
@@ -4239,7 +4315,20 @@ def merge_session_messages_append_only(
             and timestamp is not None
             and timestamp <= max_sidecar_timestamp
         ):
-            continue
+            # Legacy key within sidecar timestamp range.  Normally skip — the
+            # sidecar already has this message.  Exception: if the state.db
+            # message has tool_calls that DIFFER from the sidecar version
+            # (same content_key but different dedup_key because tool_calls
+            # differ), preserve it — distinct tool_calls must not be collapsed.
+            _tc = msg.get("tool_calls")
+            if _tc:
+                _ck = _session_message_content_key(msg)
+                if _ck in seen_content_keys and dedup_key not in seen_dedup_keys:
+                    pass  # different tool_calls from sidecar — preserve
+                else:
+                    continue
+            else:
+                continue
         seen_message_keys.add(key)
         seen_dedup_keys.add(dedup_key)
         seen_content_keys.add(_session_message_content_key(msg))
