@@ -655,6 +655,18 @@ async function send(){
   let streamId;
   try{
     const _modelState=_chatPayloadModelState();
+    const _pendingPick=(typeof _readPendingSessionModel==='function')
+      ? _readPendingSessionModel(activeSid)
+      : null;
+    const _explicitPick=_pendingPick
+      && _pendingPick.model===_modelState.model
+      && String(_pendingPick.model_provider||'')===String(_modelState.model_provider||'');
+    // Consume the pending explicit-pick marker for THIS send only. The marker is
+    // recorded on modelSelect.onchange and intentionally kept (not cleared on
+    // session-update) so it survives the normal pick→update→send flow; clear it here
+    // once read so a later send of an unchanged dropdown isn't treated as an explicit
+    // pick. (#3739/#3737, Codex catch)
+    if(_explicitPick && typeof _clearPendingSessionModel==='function') _clearPendingSessionModel(activeSid);
     const startData=await api('/api/chat/start',{method:'POST',body:JSON.stringify({
       session_id:activeSid,message:msgText,
       // S.session.model remains authoritative; the helper only resolves a
@@ -662,12 +674,17 @@ async function send(){
       model:_modelState.model,workspace:S.session.workspace,
       model_provider:_modelState.model_provider,
       profile:S.activeProfile||S.session.profile||'default',
+      explicit_model_pick:_explicitPick||undefined,
       attachments:uploaded.length?uploaded:undefined
     })});
 
     if(startData.title) applySessionTitleUpdate(activeSid, startData.title, {provisionalText:displayText.slice(0,64), rememberProvisional:true});
 
     if(startData.effective_model && S.session){
+      const _sentModel=_modelState.model;
+      if(_explicitPick && _sentModel && startData.effective_model!==_sentModel && typeof showToast==='function'){
+        showToast('Model '+_sentModel+' changed to '+startData.effective_model+' — profile provider mismatch', 5000);
+      }
       S.session.model=startData.effective_model;
       S.session.model_provider=startData.effective_model_provider||S.session.model_provider||null;
       localStorage.setItem('hermes-webui-model', startData.effective_model);

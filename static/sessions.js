@@ -170,7 +170,6 @@ function _clearComposerDraft(sid) {
 const SESSION_VIEWED_COUNTS_KEY = 'hermes-session-viewed-counts';
 const SESSION_COMPLETION_UNREAD_KEY = 'hermes-session-completion-unread';
 const SESSION_OBSERVED_STREAMING_KEY = 'hermes-session-observed-streaming';
-const SESSION_MANUAL_STATUS_KEY = 'hermes-session-manual-status';
 let _sessionViewedCounts = null;
 let _sessionCompletionUnread = null;
 let _sessionObservedStreaming = null;
@@ -352,43 +351,6 @@ function _isSessionEffectivelyStreaming(s) {
 
 function _isServerIdleSessionRow(s) {
   return Boolean(s && s.session_id && !s.is_streaming && !s.active_stream_id && !s.pending_user_message);
-}
-
-// ── Manual session status (Todo / In Progress / Done) ─────────────────────
-const _SESSION_STATUS_VALUES = ['todo', 'in-progress', 'done'];
-
-function _getSessionManualStatuses() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SESSION_MANUAL_STATUS_KEY) || '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch (_e) { return {}; }
-}
-
-function getSessionManualStatus(sid) {
-  if (!sid) return null;
-  const val = _getSessionManualStatuses()[sid];
-  return _SESSION_STATUS_VALUES.includes(val) ? val : null;
-}
-
-function setSessionManualStatus(sid, status) {
-  if (!sid) return;
-  const map = _getSessionManualStatuses();
-  if (status && _SESSION_STATUS_VALUES.includes(status)) {
-    map[sid] = status;
-  } else {
-    delete map[sid];
-  }
-  try { localStorage.setItem(SESSION_MANUAL_STATUS_KEY, JSON.stringify(map)); } catch (_e) {}
-  renderSessionListFromCache();
-}
-
-function _cycleSessionManualStatus(session) {
-  const current = getSessionManualStatus(session.session_id);
-  const idx = _SESSION_STATUS_VALUES.indexOf(current);
-  const next = idx === -1 ? _SESSION_STATUS_VALUES[0]
-    : idx === _SESSION_STATUS_VALUES.length - 1 ? null
-    : _SESSION_STATUS_VALUES[idx + 1];
-  setSessionManualStatus(session.session_id, next);
 }
 
 function _reconcileActiveSessionIdleStateFromList(serverRows) {
@@ -3028,22 +2990,6 @@ function _openSessionActionMenu(session, anchorEl){
       }
     ));
   }
-  // Manual status picker (before danger actions)
-  if (!isExternalSession) {
-    const currentStatus = getSessionManualStatus(session.session_id);
-    for (const status of _SESSION_STATUS_VALUES) {
-      menu.appendChild(_buildSessionAction(
-        t('session_status_' + status.replace(/-/g,'_')) || status,
-        '',
-        '',
-        () => {
-          closeSessionActionMenu();
-          setSessionManualStatus(session.session_id, currentStatus === status ? null : status);
-        },
-        currentStatus === status ? 'is-active' : ''
-      ));
-    }
-  }
   if(!isExternalSession){
     if(session.worktree_path){
       menu.appendChild(_buildSessionAction(
@@ -5026,15 +4972,6 @@ function renderSessionListFromCache(){
         titleRow.appendChild(dot);
       }
     }
-    const manualStatus = getSessionManualStatus(s.session_id);
-    if (manualStatus) {
-      const statusBadge = document.createElement('span');
-      statusBadge.className = 'session-manual-status session-manual-status--' + manualStatus;
-      statusBadge.textContent = t('session_status_' + manualStatus.replace(/-/g,'_')) || manualStatus;
-      statusBadge.title = t('session_status_click_to_change') || 'Click to change status';
-      statusBadge.onclick = (e) => { e.stopPropagation(); _cycleSessionManualStatus(s); };
-      titleRow.appendChild(statusBadge);
-    }
     const density=(window._sidebarDensity==='detailed'?'detailed':'compact');
     const showLineageMetadata=density==='detailed';
     const lineageKey=_sidebarLineageKeyForRow(s);
@@ -5254,8 +5191,11 @@ function renderSessionListFromCache(){
         }
         if(e2.key==='Escape'){e2.preventDefault();e2.stopPropagation();finish(false);}
       };
-      // onblur: cancel only -- no accidental saves
-      inp.onblur=()=>{ if(_renamingSid===s.session_id) finish(false); };
+      // onblur: save on blur — Escape explicitly cancels. The old cancel-on-blur
+      // behavior broke rename on mobile (iPhone "Done" dismisses the keyboard,
+      // triggering blur) and was less natural on desktop too (typing a name then
+      // clicking elsewhere should save, not discard).
+      inp.onblur=()=>{ if(_renamingSid===s.session_id) finish(true); };
       title.replaceWith(inp);
       setTimeout(()=>{inp.focus();inp.select();},10);
     };
@@ -5946,10 +5886,19 @@ function _startProjectCreate(bar, addBtn){
   const inp=document.createElement('input');
   inp.className='project-create-input';
   inp.placeholder='Project name';
+  let _finishDone=false;
   const finish=async(save)=>{
+    if(_finishDone) return;
+    _finishDone=true;
     if(save&&inp.value.trim()){
       const color=PROJECT_COLORS[_allProjects.length%PROJECT_COLORS.length];
-      await api('/api/projects/create',{method:'POST',body:JSON.stringify({name:inp.value.trim(),color})});
+      try{
+        await api('/api/projects/create',{method:'POST',body:JSON.stringify({name:inp.value.trim(),color})});
+      }catch(e){
+        _finishDone=false;
+        showToast('Project create failed: '+(e.message||e));
+        return;
+      }
       await renderSessionList();
       showToast('Project created');
     }else{
@@ -5964,7 +5913,7 @@ function _startProjectCreate(bar, addBtn){
     }
     if(e.key==='Escape'){e.preventDefault();finish(false);}
   };
-  inp.onblur=()=>finish(false);
+  inp.onblur=()=>finish(true);
   inp.addEventListener('input',()=>_resizeProjectInput(inp));
   addBtn.replaceWith(inp);
   _resizeProjectInput(inp);
@@ -5975,13 +5924,17 @@ function _startProjectRename(proj, chip){
   const inp=document.createElement('input');
   inp.className='project-create-input';
   inp.value=proj.name;
+  let _finishDone=false;
   const finish=async(save)=>{
+    if(_finishDone) return;
+    _finishDone=true;
     if(save&&inp.value.trim()&&inp.value.trim()!==proj.name){
       try {
         await api('/api/projects/rename',{method:'POST',body:JSON.stringify({project_id:proj.project_id,name:inp.value.trim()})});
         await renderSessionList();
         showToast('Project renamed');
       } catch(e) {
+        _finishDone=false;
         showToast('Rename failed: '+(e.message||e));
       }
     }else{
@@ -5996,7 +5949,7 @@ function _startProjectRename(proj, chip){
     }
     if(e.key==='Escape'){e.preventDefault();finish(false);}
   };
-  inp.onblur=()=>finish(false);
+  inp.onblur=()=>finish(true);
   inp.onclick=(e)=>e.stopPropagation();
   inp.addEventListener('input',()=>_resizeProjectInput(inp));
   chip.replaceWith(inp);

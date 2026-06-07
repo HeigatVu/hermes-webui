@@ -5712,12 +5712,22 @@ function _normalizeHealthServerIdentity(rawIdentity){
   return Number.isFinite(numeric) ? String(numeric) : null;
 }
 
+function _healthResponseServerIdentity(data){
+  if(!data||typeof data!=='object') return null;
+  const serverStartedAt=_normalizeHealthServerIdentity(data.server_started_at);
+  const hasUptimeSeconds=data.uptime_seconds!==null&&data.uptime_seconds!==undefined;
+  const uptimeSeconds=hasUptimeSeconds?Number(data.uptime_seconds):NaN;
+  const normalizedUptime=Number.isFinite(uptimeSeconds)&&uptimeSeconds>=0 ? uptimeSeconds : null;
+  if(serverStartedAt===null&&normalizedUptime===null) return null;
+  return {serverStartedAt,uptimeSeconds:normalizedUptime};
+}
+
 async function _readHealthServerIdentity() {
   try {
     const r=await fetch(new URL('health', document.baseURI||location.href).href,{cache:'no-store'});
     if(!r.ok) return null;
     const data=await r.json();
-    return _normalizeHealthServerIdentity(data&&data.server_started_at);
+    return _healthResponseServerIdentity(data);
   } catch (_) {
     return null;
   }
@@ -5762,13 +5772,36 @@ async function _waitForServerThenReload(opts){
   opts=opts||{};
   const interval=opts.interval||500;
   const maxMs=opts.maxMs||15000;
-  const baselineServerIdentity=_normalizeHealthServerIdentity(opts.baselineServerIdentity);
+  const baselineServerIdentity=(()=>{
+    const rawIdentity=opts.baselineServerIdentity;
+    if(!rawIdentity||typeof rawIdentity!=='object'){
+      const normalizedServerStartedAt=_normalizeHealthServerIdentity(rawIdentity);
+      return normalizedServerStartedAt===null ? null : {serverStartedAt:normalizedServerStartedAt,uptimeSeconds:null};
+    }
+    const normalizedIdentity={
+      serverStartedAt:_normalizeHealthServerIdentity(rawIdentity.serverStartedAt),
+      uptimeSeconds:Number.isFinite(Number(rawIdentity.uptimeSeconds))&&Number(rawIdentity.uptimeSeconds)>=0 ? Number(rawIdentity.uptimeSeconds) : null,
+    };
+    return normalizedIdentity.serverStartedAt===null&&normalizedIdentity.uptimeSeconds===null ? null : normalizedIdentity;
+  })();
   window._restartingForUpdate=true;
   const msgEl=$('reconnectMsg');
   const banner=$('reconnectBanner');
   if(msgEl) msgEl.textContent='⏳ Restarting… please wait';
   if(banner) banner.classList.add('visible');
   const deadline=Date.now()+maxMs;
+  // Track restart-outage evidence. An outage (failed or non-OK /health probes)
+  // followed by a healthy response is a reliable new-instance signal even when
+  // only uptime_seconds is comparable and the replacement's uptime is not strictly
+  // lower than the captured baseline (e.g. a deployment that strips
+  // server_started_at and whose baseline uptime was very low). We require at least
+  // TWO consecutive outage probes before trusting it, so a single transient network
+  // blip (with the OLD process still up and its uptime merely increasing) cannot
+  // trigger a premature reload onto the old server. Both thrown fetch errors AND
+  // non-OK responses (e.g. a reverse-proxy 502/503 during restart) count as outage
+  // evidence. (#3713 Codex catches)
+  let _consecutiveOutages=0;
+  const _restartOutageObserved=()=>_consecutiveOutages>=2;
   // Give the server a moment to actually begin its restart before the first
   // probe — otherwise the old process may still respond ok on the first poll.
   await new Promise(r=>setTimeout(r, interval));
@@ -5779,19 +5812,78 @@ async function _waitForServerThenReload(opts){
         let data={};
         try{ data=await r.json(); }catch(_){}
         if(data && data.status==='ok'){
-          const nextServerIdentity=_normalizeHealthServerIdentity(data&&data.server_started_at);
+          const nextServerIdentity=_healthResponseServerIdentity(data);
           if (baselineServerIdentity===null){
             location.reload();
             return;
           }
-          if (nextServerIdentity!==null && nextServerIdentity !== baselineServerIdentity){
+          if(
+            nextServerIdentity===null &&
+            (
+              baselineServerIdentity.serverStartedAt!==null ||
+              baselineServerIdentity.uptimeSeconds!==null
+            )
+          ){
+            // If the replacement server comes back healthy without either
+            // identity field after the baseline exposed a comparable identity,
+            // treat that healthy response as the new server instead of timing
+            // out on an uncomparable identity shape.
             location.reload();
             return;
           }
-          // Keep polling while the server keeps reporting the same (pre-restart) process identity
+          if(
+            nextServerIdentity!==null &&
+            baselineServerIdentity.serverStartedAt!==null &&
+            nextServerIdentity.serverStartedAt===null &&
+            nextServerIdentity.uptimeSeconds!==null
+          ){
+            // If the baseline exposed server_started_at but the replacement
+            // health response degrades to uptime-only, there is no longer a
+            // comparable started_at field. Treat the first healthy uptime-only
+            // response as the new server instead of timing out.
+            location.reload();
+            return;
+          }
+          if(
+            nextServerIdentity!==null&&(
+              (baselineServerIdentity.serverStartedAt===null&&nextServerIdentity.serverStartedAt!==null)||
+              (baselineServerIdentity.serverStartedAt!==null&&nextServerIdentity.serverStartedAt!==null&&nextServerIdentity.serverStartedAt!==baselineServerIdentity.serverStartedAt)||
+              (baselineServerIdentity.uptimeSeconds!==null&&nextServerIdentity.uptimeSeconds!==null&&nextServerIdentity.uptimeSeconds<baselineServerIdentity.uptimeSeconds)
+            )
+          ){
+            location.reload();
+            return;
+          }
+          if(
+            _restartOutageObserved() &&
+            nextServerIdentity!==null &&
+            baselineServerIdentity.serverStartedAt===null &&
+            nextServerIdentity.serverStartedAt===null &&
+            baselineServerIdentity.uptimeSeconds!==null &&
+            nextServerIdentity.uptimeSeconds!==null
+          ){
+            // Uptime-only on both sides AND we saw a sustained restart outage
+            // (>=2 consecutive failed/non-OK probes) before this healthy response:
+            // treat that outage as the restart, so reload even though the
+            // replacement uptime is not strictly lower than a very-low baseline.
+            location.reload();
+            return;
+          }
+          // Healthy response still describing the pre-restart process: this is the
+          // OLD server answering, so any earlier outage was a transient blip, not a
+          // restart — reset the outage evidence so it can't accumulate into a false
+          // positive across unrelated blips.
+          _consecutiveOutages=0;
+          // Keep polling while /health still describes the pre-restart process.
+        }else{
+          // Reachable but not status:ok (still starting up) — counts as outage.
+          _consecutiveOutages++;
         }
+      }else{
+        // Non-OK HTTP (e.g. reverse-proxy 502/503 during restart) — outage evidence.
+        _consecutiveOutages++;
       }
-    }catch(_){ /* socket closed during restart — retry */ }
+    }catch(_){ _consecutiveOutages++; /* socket closed during restart — retry */ }
     await new Promise(r=>setTimeout(r, interval));
   }
   if(msgEl) msgEl.textContent='⚠️ Server is taking longer than expected — click Reload when ready';

@@ -249,6 +249,18 @@ else:
     _HERMES_FOUND = False
 
 # ── Config file (reloadable -- supports profile switching) ──────────────────
+
+def _expand_env_vars(obj):
+    """Recursively expand ${VAR} references in config values using os.environ."""
+    if isinstance(obj, str):
+        return re.sub(r"\${([^}]+)}", lambda m: os.environ.get(m.group(1), m.group(0)), obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
+
+
 _cfg_cache = {}
 _cfg_lock = threading.Lock()
 _cfg_mtime: float = 0.0  # last known mtime of config.yaml; 0 = never loaded
@@ -308,6 +320,22 @@ def _get_config_path() -> Path:
 
 _WEBUI_SESSION_SAVE_MODES = {"deferred", "eager"}
 _DEFAULT_WEBUI_SESSION_SAVE_MODE = "deferred"
+_DEFAULT_EXPERIMENTAL_CONFIG = {
+    # Dormant first slice for the unified SessionDB migration. Runtime WebUI
+    # session call sites must continue using the existing JSON paths unless a
+    # later PR deliberately enables and wires this flag.
+    "unified_session_db": False,
+}
+
+
+def _apply_config_defaults(config_data: dict) -> None:
+    """Populate documented default-only config keys in-place."""
+    experimental = config_data.get("experimental")
+    if not isinstance(experimental, dict):
+        experimental = {}
+        config_data["experimental"] = experimental
+    for key, value in _DEFAULT_EXPERIMENTAL_CONFIG.items():
+        experimental.setdefault(key, value)
 
 
 def get_config() -> dict:
@@ -355,6 +383,19 @@ def get_webui_session_save_mode(config_data: dict | None = None) -> str:
     return _DEFAULT_WEBUI_SESSION_SAVE_MODE
 
 
+def is_unified_session_db_enabled(config_data: dict | None = None) -> bool:
+    """Return the dormant unified-session-db feature flag.
+
+    The default is intentionally false so adding the JSON adapter cannot change
+    runtime persistence until a later migration PR switches call sites.
+    """
+    active_cfg = config_data if isinstance(config_data, dict) else cfg
+    experimental = active_cfg.get("experimental", {}) if isinstance(active_cfg, dict) else {}
+    if not isinstance(experimental, dict):
+        return False
+    return experimental.get("unified_session_db") is True
+
+
 def reload_config() -> None:
     """Reload config.yaml from the active profile's directory."""
     global _cfg_mtime, _cfg_path, _cfg_fingerprint
@@ -372,13 +413,14 @@ def reload_config() -> None:
             if config_path.exists():
                 loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
-                    _cfg_cache.update(loaded)
+                    _cfg_cache.update(_expand_env_vars(loaded))
                     try:
                         _cfg_mtime = Path(config_path).stat().st_mtime
                     except OSError:
                         _cfg_mtime = 0.0
         except Exception:
             logger.debug("Failed to load yaml config from %s", config_path)
+        _apply_config_defaults(_cfg_cache)
         _cfg_fingerprint = _fingerprint_config(_cfg_cache)
         # Bust the models cache so the next request sees fresh config values.
         # Only delete the disk cache when config has actually changed -- not on
@@ -399,7 +441,7 @@ def _load_yaml_config_file(config_path: Path) -> dict:
         return {}
     try:
         loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        return loaded if isinstance(loaded, dict) else {}
+        return _expand_env_vars(loaded) if isinstance(loaded, dict) else {}
     except Exception:
         logger.debug("Failed to parse yaml config from %s", config_path)
         return {}
