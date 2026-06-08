@@ -9,14 +9,12 @@
      correct base when the page is served from /session/<id> routes. See #2226. -->
 <script>(function(){var path=location.pathname,marker='/session/',i=path.indexOf(marker),p;i>=0?p=(path.slice(0,i+1)||'/'):p=(path.endsWith('/')?path:(path.replace(/\/[^\/]*$/,'/')||'/'));document.write('<base href="'+location.origin+p+'">');})()</script>
 <link rel="icon" type="image/svg+xml" href="static/favicon.svg">
-<link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32.png">
-<link rel="shortcut icon" href="static/favicon.ico">
 <link rel="manifest" href="manifest.json" crossorigin="use-credentials">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hermes">
-<link rel="apple-touch-icon" sizes="512x512" href="static/apple-touch-icon.png">
+<link rel="apple-touch-icon" href="static/favicon.svg">
 <script>(function(){try{var themes={light:1,dark:1,system:1},skins={default:1,ares:1,mono:1,graphite:1,slate:1,poseidon:1,sisyphus:1,charizard:1,sienna:1,catppuccin:1,hepburn:1,nous:1,'geist-contrast':1,neon:1,zeus:1,'verdigris':1},legacy={slate:['dark','slate'],solarized:['dark','poseidon'],monokai:['dark','sisyphus'],nord:['dark','slate'],oled:['dark','default']},t=(localStorage.getItem('hermes-theme')||'dark').toLowerCase(),s=(localStorage.getItem('hermes-skin')||'').toLowerCase(),m=legacy[t],theme=m?m[0]:(themes[t]?t:'dark'),skin=skins[s]?s:(m?m[1]:'default');localStorage.setItem('hermes-theme',theme);localStorage.setItem('hermes-skin',skin);if(theme==='system')theme=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(theme==='dark')document.documentElement.classList.add('dark');if(skin!=='default')document.documentElement.dataset.skin=skin;}catch(e){document.documentElement.classList.add('dark');}})()</script>
 <script>(function(){try{var fs=localStorage.getItem('hermes-font-size');if(fs&&fs!=='default')document.documentElement.dataset.fontSize=fs;}catch(e){}})()</script>
 <!-- theme-color: surfaces the active app chrome color to native status bars (Safari status bar, PWA, native WKWebView wrappers). Updated dynamically by boot.js when theme/skin changes. The light/dark default values match style.css :root --sidebar / :root.dark --sidebar. -->
@@ -123,17 +121,27 @@
   </button>
   <div class="app-titlebar-inner">
     <span class="app-titlebar-icon" aria-hidden="true">
-      <svg viewBox="0 0 64 64" width="16" height="16" aria-hidden="true">
+      <svg viewBox="0 0 120 120" width="16" height="16" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
         <defs>
-          <linearGradient id="app-titlebar-gold" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" style="stop-color:#F5C542"/>
-            <stop offset="100%" style="stop-color:#D4961C"/>
+          <linearGradient id="iconBg" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#161b22" />
+            <stop offset="100%" stop-color="#0d1117" />
           </linearGradient>
+          <linearGradient id="iconGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#58a6ff" />
+            <stop offset="50%" stop-color="#f0883e" />
+            <stop offset="100%" stop-color="#3fb950" />
+          </linearGradient>
+          <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
         </defs>
-        <rect x="30" y="10" width="4" height="46" rx="2" fill="url(#app-titlebar-gold)"/>
-        <path d="M30 18 C24 14, 14 14, 10 18 C14 16, 22 16, 28 20" fill="#F5C542" opacity="0.9"/>
-        <path d="M34 18 C40 14, 50 14, 54 18 C50 16, 42 16, 36 20" fill="#F5C542" opacity="0.9"/>
-        <circle cx="32" cy="10" r="4" fill="#F5C542"/>
+        <rect x="10" y="10" width="100" height="100" rx="25" fill="url(#iconBg)" stroke="rgba(255,255,255,0.1)" stroke-width="2" />
+        <rect x="10" y="10" width="100" height="100" rx="25" fill="none" stroke="url(#iconGlow)" stroke-width="1.5" opacity="0.8" />
+        <path d="M 35 70 A 18 18 0 1 1 53 52 L 53 70 A 12 12 0 0 0 77 58 L 77 38" fill="none" stroke="url(#iconGlow)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" filter="url(#neonGlow)"/>
+        <circle cx="77" cy="24" r="5" fill="#58a6ff" filter="url(#neonGlow)"/>
+        <path d="M 25 12 L 95 12" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-linecap="round" />
       </svg>
     </span>
     <span class="app-titlebar-title" id="appTitlebarTitle">Hermes</span>
