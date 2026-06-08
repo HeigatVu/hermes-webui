@@ -3,6 +3,84 @@
 
 ## [Unreleased]
 
+## [v0.51.325] — 2026-06-08 — Release KO (in-app Help tab)
+
+### Added
+- **A Help tab in Settings** with quick links to the documentation (get-hermes.ai) and the GitHub issues page, presented as icon-led resource cards. Translated across all 13 locales. (#3518, @rodboev)
+
+## [v0.51.324] — 2026-06-07 — Release KN (i18n — translate settings + gateway-status labels)
+
+### Added
+- **Settings labels/descriptions and gateway-status strings are now translated across all 13 locales.** Previously-untranslated settings fields (token speed, terminal auto-expand, pinned-conversations limit, and others) and gateway session-count strings now follow the selected UI language. English copy is unchanged (it's the fallback), so there's no visible change for English users. (#3801, @leszek3737)
+
+## [v0.51.323] — 2026-06-07 — Release KM (7-day provider spend chart)
+
+### Added
+- **The Active Provider Quota card now shows a 7-day spend bar chart with a projected monthly pace** (OpenRouter). Daily spend deltas render as a small bar chart with a "Monthly pace" estimate; a graceful "not enough data yet" message shows until two daily snapshots exist. (#3600, @rodboev)
+
+## [v0.51.322] — 2026-06-07 — Release KL (sortable + filterable markdown tables)
+
+### Added
+- **Markdown tables in chat are now sortable and filterable on desktop.** Click any column header to sort (numeric-aware), and tables with 4+ rows get a filter box. Column headers show a faint sort indicator that becomes a solid arrow on the active column. Progressive enhancement only — it doesn't change how tables look until you interact, skips CSV tables, and is suppressed below the 640px mobile breakpoint so phone tables render exactly as before (no added wrapping). (#3728, @rodboev)
+
+## [v0.51.321] — 2026-06-07 — Release KK (Phase 3 light — load renderable transcript tails)
+
+### Fixed
+- **Opening a tool-heavy conversation no longer cold-loads showing just one or two messages.** `GET /api/session?msg_limit=` caps *raw* messages, but the transcript the UI renders filters out tool rows, empty separator turns, and compression markers — so a long tool-heavy tail could load with only one or two visible messages above a large "Load earlier" button. The display window now expands backward until it contains roughly the requested number of *renderable* rows (keeping the raw offset cursor honest), so the initial view is populated as expected. (#3790, @ai-ag2026)
+
+## [v0.51.320] — 2026-06-07 — Release KJ (Phase 2 — Polish (pl) language support)
+
+### Added
+- **Polish (pl) language support.** Adds a complete Polish translation set to the in-app localization, a Polish login-page locale, and resolver coverage for `pl` / `pl-PL` / `pl_PL`, with the locale registered consistently across every key group (appearance skins, approval/clarify prompts, tooltips, cache-usage labels, profile skill counts) and parity tests asserting the new locale is complete and actually translated. (#3781, @leszek3737)
+
+## [v0.51.319] — 2026-06-07 — Release KI (Phase 3 light — refresh stale continuation metadata)
+
+### Fixed
+- **A compression continuation no longer looks like it lost recent messages when `_index.json` is stale.** Complementing the snapshot-side fix, the sidebar now also refreshes a continuation row's sidecar metadata when the row is part of a compression lineage and its sidecar file is newer than the indexed timestamp — so recent turns that landed in the sidecar after the last index write are reflected in the row's count/last-activity instead of showing a stale (lower) message count. The refresh stays scoped to lineage-shaped rows, so ordinary sidebar polls don't hydrate every historical transcript. (#3789, refs #3740, @ai-ag2026)
+
+## [v0.51.318] — 2026-06-07 — Release KH (Phase 3 light — warm account-usage probe worker pool)
+
+### Changed
+- **Account-usage quota probes now reuse a warm worker pool instead of spawning a fresh interpreter per probe.** Quota checks for the providers that need an isolated subprocess previously started a new Python interpreter — and re-imported the agent account-usage stack — on every uncached probe, which is slow when the quota UI is opened across several profiles/providers. A profile-home-keyed pool of persistent warm workers (with a 5-minute idle shutdown) eliminates the repeated spawn/import overhead while keeping every existing safety property: the concurrency semaphore cap, the LRU result cache, the parent-death-signal hardening, and subprocess env scrubbing. Workers are invalidated when provider credentials change so a child process can't retain stale keys, contention falls back to a one-shot probe, and all workers are cleaned up at process exit. (#3722 / #1912, @rodboev)
+
+## [v0.51.317] — 2026-06-07 — Release KG (Phase 3 light — align CSP enforcement with report policy)
+
+### Fixed
+- **The enforced Content-Security-Policy now honors the same `connect-src` sources as the report-only policy.** The enforced CSP header used a narrow `connect-src` (`'self'` + jsdelivr) and ignored both the local-dev `127.0.0.1`/`localhost` sources and the `HERMES_WEBUI_CSP_CONNECT_EXTRA` allowlist, while the report-only policy honored them — so a connect source could pass report-only yet be blocked by the enforced policy. Both policies are now built from one shared template with the same validated `connect-src` (report-only just appends `report-uri`/`report-to`), and the policy builder moved from `server.py` into `api/helpers.py` so it's unit-testable. As part of the alignment the enforced policy's `connect-src` gains the local-dev http/ws origins + operator `HERMES_WEBUI_CSP_CONNECT_EXTRA` allowlist and `media-src` matches the shared template; `object-src 'none'` and `frame-ancestors 'none'` are now enforced. (#3727 / #1909, @rodboev)
+
+## [v0.51.316] — 2026-06-07 — Release KF (Phase 2 — agent-source dependency audit contract)
+
+### Changed
+- **Documented the WebUI → hermes-agent source-dependency contract.** Adds a deterministic, repo-relative audit script (`scripts/audit_agent_source_dependencies.py`) that classifies how the WebUI depends on the agent source tree, an architecture/contract doc, and a regression test pinning the dependency classes. Read-only tooling and docs — no runtime behavior change; groundwork for cleaner agent/WebUI packaging boundaries. (#3723, @rodboev)
+
+## [v0.51.315] — 2026-06-07 — Release KE (test infra — cross-platform workspace-fallback tests)
+
+### Changed
+- **Workspace-fallback tests are now cross-platform and deterministic.** Three tests simulated an unusable/unwritable workspace path by hard-coding a POSIX path (`/definitely/not/usable`) or by `chmod`-ing a temp dir read-only — which silently no-ops when the suite runs as root and is meaningless on Windows. They now simulate the failure by monkeypatching `_ensure_workspace_dir` / `Path.mkdir`, so the assertions hold identically on every platform and under any uid. Test-harness only; no shipped behavior change. (#3780 / #3771, @rodboev)
+
+## [v0.51.314] — 2026-06-07 — Release KD (test infra — reliable test-server boot + diagnostics)
+
+### Changed
+- **The pytest test-server fixture now boots reliably and reports WHY it failed.** Previously the session-scoped server subprocess sent its stdout/stderr to `/dev/null` and was waited on for a fixed 20s with no check for early death — so a slow import-heavy boot (or a transient port-bind race) timed out opaquely and every HTTP-dependent test then cascaded into hundreds of `ConnectionRefused` failures with no clue as to the cause. The fixture now captures server output to a temp log, polls the subprocess for early exit (failing fast instead of waiting out the timeout), raises the boot timeout to 45s, retries once with a fresh port-kill on failure, and surfaces the tail of the captured server log in the `pytest.fail` message. This is test-harness-only; it does not affect the shipped application. (internal)
+
+## [v0.51.313] — 2026-06-07 — Release KC (instant profile switcher — skip the per-profile alias scan)
+
+### Fixed
+- **The profile switcher in the composer footer now opens instantly instead of hanging for several seconds.** Building the profile list called into the agent's `list_profiles()`, which runs `find_alias_for_profile()` once per profile — and that scans every file in the wrapper directory (`~/.local/bin`) and reads each one in full, including large CLI binaries. On a machine with big binaries on `PATH` that is hundreds of MB of reads per profile, so the dropdown blocked for many seconds on every open. The WebUI never uses that alias data, so it now builds the profile list from the cheap per-profile metadata directly and skips the alias scan entirely, with a short in-memory cache so rapid re-opens are free and a graceful fallback to the original path if those internals are unavailable. New profiles still appear immediately and switching between them works as before. (closes #3772 by a different approach)
+
+## [v0.51.312] — 2026-06-07 — Release KB (brick-wave — purge stale bytecode after self-update)
+
+### Fixed
+- **Self-update no longer fails with an `AttributeError` on the first chat after restarting.** `POST /api/updates/apply` runs `git pull --ff-only` then `os.execv()` to restart with fresh code, but `os.execv()` replaces the process image without touching the on-disk `__pycache__/` bytecode cache. When a pull writes new `.py` files whose mtime lands within the same second as the pre-existing `.pyc` files, CPython can trust the stale cache and serve an old class definition — so a method added in the same update appears missing and the next chat raises `AttributeError`. The restart path now deletes all `__pycache__/` directories under the agent and WebUI repos right before `os.execv()`, forcing clean recompilation on the next startup. (#3774, @bambalados)
+
+## [v0.51.311] — 2026-06-07 — Release KA (brick-wave — workspace Git RCE hardening + stale-snapshot sidebar visibility)
+
+### Security
+- **Workspace Git operations now run with hardened Git config and non-interactive authentication defaults.** A malicious or restored workspace repository could turn read-only `git status` / default-enabled `git fetch --prune` into host command execution via repository-local executable config (`core.fsmonitor`, `core.askPass`, `credential.helper`, `protocol.ext.allow=always`). WebUI now passes hardened `-c` overrides on every workspace Git subprocess to ignore that repo-local executable config, removes inherited `GIT_ASKPASS` / `SSH_ASKPASS` / `GIT_SSH` / `GIT_SSH_COMMAND` env overrides, and sets `GIT_TERMINAL_PROMPT=0` so private HTTPS remotes fail fast instead of blocking on an interactive prompt. Private HTTPS remotes that rely on a stored credential helper should use an SSH remote or another externally authenticated transport from WebUI. (#3769, @Hinotoi-agent)
+
+### Fixed
+- **The sidebar no longer hides fuller pre-compression snapshots when `_index.json` is stale.** Snapshot rows now refresh their sidecar metadata before lineage visibility chooses between an archived parent and its continuation, and `GET /api/session` stitches the archived snapshot parent into the merged display transcript, so conversations whose parent sidecar received later transcript rows do not appear to lose messages after compaction. Adds regression coverage for a stale `_index.json` hiding the fuller pre-compression sidecar. (#3770, @ai-ag2026)
+
 ## [v0.51.310] — 2026-06-07 — Release JZ (stage-3760 — long-press project chips to delete on touch)
 
 ### Fixed

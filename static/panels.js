@@ -5911,7 +5911,7 @@ function switchSettingsSection(name){
       });
     }
   }
-  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='system')?name:'conversation';
+  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='system'||name==='help')?name:'conversation';
   // Deep-linking to the Plugins pane when the tab is hidden (no plugins
   // installed, #3457) falls back to Conversation. Resolve this BEFORE toggling
   // panes/sidebar/dropdown below so every downstream selection uses the
@@ -5923,13 +5923,13 @@ function switchSettingsSection(name){
   }
   _settingsSection=section;
   _currentSettingsSection=section;
-  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',providers:'Providers',plugins:'Plugins',system:'System'};
+  const map={conversation:'Conversation',appearance:'Appearance',preferences:'Preferences',providers:'Providers',plugins:'Plugins',system:'System',help:'Help'};
   // Sidebar menu items
   document.querySelectorAll('#settingsMenu .side-menu-item').forEach(it=>{
     it.classList.toggle('active', it.dataset.settingsSection===section);
   });
   // Panes in main
-  ['conversation','appearance','preferences','providers','plugins','system'].forEach(key=>{
+  ['conversation','appearance','preferences','providers','plugins','system','help'].forEach(key=>{
     const pane=$('settingsPane'+map[key]);
     if(pane) pane.classList.toggle('active', key===section);
   });
@@ -6863,7 +6863,10 @@ async function loadProvidersPanel(){
     list.innerHTML='';
     _providerCardEls.clear();
     const quotaCard=_buildProviderQuotaCard(quota);
-    if(quotaCard) list.appendChild(quotaCard);
+    if(quotaCard){
+      list.appendChild(quotaCard);
+      renderProviderCostChart(quotaCard); // async, fire-and-forget
+    }
     if(providers.length===0){
       list.style.display='none';
       if(empty) empty.style.display='';
@@ -6899,6 +6902,10 @@ async function _refreshProviderQuota(card,button){
     const fresh=_buildProviderQuotaCard(next);
     if(fresh){
       card.replaceWith(fresh);
+      // Re-render the 7-day spend chart onto the rebuilt card — the quota
+      // refresh replaces the whole card, which would otherwise drop the chart
+      // until the next full panel reload (#3600).
+      renderProviderCostChart(fresh); // async, fire-and-forget
       if(typeof showToast==='function') showToast(failed?t('provider_quota_refresh_failed'):t('provider_quota_refresh_succeeded'));
       return;
     }
@@ -7123,6 +7130,43 @@ function _buildProviderQuotaCard(status){
     });
   }
   return card;
+}
+
+async function renderProviderCostChart(card){
+  let history;
+  try{
+    history=await api('/api/provider/cost-history?provider=openrouter');
+  }catch(e){
+    return; // silently skip if endpoint unavailable
+  }
+  const body=card.querySelector('.provider-quota-body');
+  if(!body||body.querySelector('.provider-cost-chart-wrap')) return;
+  if(!history||history.ok===false) return;
+  const snaps=Array.isArray(history.snapshots)?history.snapshots:[];
+  // need at least 2 snapshots to have one non-null delta
+  const hasData=snaps.filter(s=>s.delta!=null).length>=1;
+  if(!hasData){
+    const empty=document.createElement('div');
+    empty.className='provider-cost-chart-wrap';
+    empty.innerHTML='<div class="provider-cost-chart-title">7-day spend</div><div class="provider-quota-message">Not enough data yet. Cost chart builds after 2 daily snapshots.</div>';
+    body.appendChild(empty);
+    return;
+  }
+  const maxDelta=Math.max(...snaps.map(s=>s.delta!=null?Number(s.delta):0),1e-9);
+  const nonNull=snaps.filter(s=>s.delta!=null).map(s=>Number(s.delta));
+  const avg=nonNull.length?nonNull.reduce((a,b)=>a+b,0)/nonNull.length:0;
+  const pace='$'+(avg*30).toFixed(2);
+  const bars=snaps.map(s=>{
+    const delta=s.delta!=null?Number(s.delta):null;
+    const pct=delta!=null?Math.max((delta/maxDelta)*100,delta>0?2:0).toFixed(1):'0';
+    const label=String(s.date||'').slice(5);
+    const tip=delta!=null?`${s.date} · $${delta.toFixed(4)}`:`${s.date} · no baseline`;
+    return `<div class="insights-daily-bar" title="${esc(tip)}"><div class="insights-daily-stack" aria-label="${esc(tip)}"><div class="insights-daily-bar-input" style="height:${pct}%"></div></div><span>${esc(label)}</span></div>`;
+  }).join('');
+  const wrap=document.createElement('div');
+  wrap.className='provider-cost-chart-wrap';
+  wrap.innerHTML=`<div class="provider-cost-chart-title">7-day spend <span class="provider-cost-chart-pace">Monthly pace: ${esc(pace)}</span></div><div class="provider-cost-chart-bars insights-daily-token-chart">${bars}</div>`;
+  body.appendChild(wrap);
 }
 
 function _buildProviderCard(p){
@@ -8279,16 +8323,16 @@ function loadGatewayStatus(){
   api('/api/gateway/status').then(r=>{
     if(!r) return;
     if(!r.configured){
-      card.innerHTML=`<div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>Gateway not configured</div>`;
+      card.innerHTML=`<div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>${esc(t('gateway_not_configured'))}</div>`;
       return;
     }
     if(!r.running){
       const reason = _gatewayStatusReason(r);
       const statusLabel = reason === 'gateway_stale_running_state'
-        ? 'Gateway metadata stale'
+        ? t('gateway_metadata_stale')
         : reason === 'remote_gateway_unreachable'
-          ? 'Gateway endpoint not reachable'
-          : 'Gateway not running';
+          ? t('gateway_endpoint_unreachable')
+          : t('gateway_not_running');
       card.innerHTML=`<div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block"></span>${esc(statusLabel)}</div>`;
       return;
     }
@@ -8300,10 +8344,10 @@ function loadGatewayStatus(){
         return `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--code-bg);border:1px solid var(--border2);border-radius:12px;font-size:12px;font-weight:500">${icon} ${esc(p.label)}</span>`;
       }).join(' ');
     }
-    const lastActive=r.last_active?`<span style="font-size:11px;color:var(--muted)">Last active: ${esc(new Date(r.last_active).toLocaleString())}</span>`:'';
-    const sessionInfo=r.session_count?`<span style="font-size:11px;color:var(--muted)">${r.session_count} session${r.session_count!==1?'s':''}</span>`:'';
-    card.innerHTML=`<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:13px;font-weight:500;color:#22c55e">Running</span></div>${badges?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${badges}</div>`:''}<div style="display:flex;gap:12px">${sessionInfo}${lastActive}</div>`;
-  }).catch(()=>{card.innerHTML=`<div style="color:#ef4444;font-size:12px">Failed to load gateway status</div>`});
+    const lastActive=r.last_active?`<span style="font-size:11px;color:var(--muted)">${esc(t('gateway_last_active'))}${esc(new Date(r.last_active).toLocaleString())}</span>`:'';
+    const sessionInfo=r.session_count?`<span style="font-size:11px;color:var(--muted)">${esc(t('gateway_session_count',r.session_count))}</span>`:'';
+    card.innerHTML=`<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></span><span style="font-size:13px;font-weight:500;color:#22c55e">${esc(t('gateway_running_label'))}</span></div>${badges?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${badges}</div>`:''}<div style="display:flex;gap:12px">${sessionInfo}${lastActive}</div>`;
+  }).catch(()=>{card.innerHTML=`<div style="color:#ef4444;font-size:12px">${esc(t('gateway_load_failed'))}</div>`});
 }
 // Load MCP servers when system settings tab opens
 const _origSwitchSettings=switchSettingsSection;

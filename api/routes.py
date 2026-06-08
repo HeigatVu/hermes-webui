@@ -2833,7 +2833,7 @@ def _message_counts_as_renderable_for_window(message) -> bool:
     return bool(role and role != "tool")
 
 
-def _message_window_for_display(messages, msg_limit=None, msg_before=None) -> tuple[list, int]:
+def _message_window_for_display(messages, msg_limit=None, msg_before=None, expand_renderable=False) -> tuple[list, int]:
     """Return a paginated message window plus its offset in ``messages``.
 
     The normal fast path is a raw tail window. If that window contains no
@@ -2863,19 +2863,87 @@ def _message_window_for_display(messages, msg_limit=None, msg_before=None) -> tu
                 start_idx = max(0, end_idx - limit)
                 window = source[start_idx:end_idx]
                 break
+    if limit > 1 and window and expand_renderable:
+        # ``msg_limit`` is a raw-message transport cap, but the WebUI renders a
+        # filtered transcript: role=tool rows, empty separator assistants, and
+        # compression markers can all disappear. A long tool-heavy tail can
+        # therefore produce a cold reload that visibly contains only one or two
+        # messages plus a huge "Load earlier" button. Expand the raw window
+        # backwards until it contains roughly ``limit`` renderable transcript
+        # rows, while keeping the raw offset cursor honest.
+        #
+        # Gated behind the explicit ``expand_renderable`` flag, which the
+        # frontend sends ONLY on the initial cold-load fetch. It must NOT apply
+        # to the "Load earlier" cumulative path (which re-requests with a larger
+        # msg_limit and no msg_before) nor the msg_before fallback page — those
+        # keep the raw transport cap so one scroll-up can't pull a whole
+        # tool-heavy transcript back in a single response. Cold loads are the
+        # only place the "1-2 visible messages" cliff happens.
+        renderable_count = sum(1 for msg in window if _message_counts_as_renderable_for_window(msg))
+        if renderable_count < limit:
+            target_renderable = min(
+                limit,
+                sum(1 for msg in source if _message_counts_as_renderable_for_window(msg)),
+            )
+            while start_idx > 0 and renderable_count < target_renderable:
+                start_idx -= 1
+                if _message_counts_as_renderable_for_window(source[start_idx]):
+                    renderable_count += 1
+            window = source[start_idx:end_idx]
     return window, start_idx
+
+
+def _webui_sidecar_lineage_messages_for_display(session, *, max_hops: int = 20) -> list:
+    """Return WebUI sidecar messages stitched across compression snapshots.
+
+    WebUI compression continuations persist the archived transcript in a parent
+    sidecar marked ``pre_compression_snapshot`` and keep subsequent turns in the
+    child sidecar. Opening the child alone makes older turns look lost. Stitch
+    only those snapshot parents for display; ordinary forks also carry
+    ``parent_session_id`` but must remain independent conversations.
+    """
+    segments = []
+    current = session
+    seen = {str(getattr(session, "session_id", "") or "")}
+    for _ in range(max(0, int(max_hops))):
+        parent_id = str(getattr(current, "parent_session_id", "") or "").strip()
+        if not parent_id or parent_id in seen or not is_safe_session_id(parent_id):
+            break
+        parent = Session.load(parent_id)
+        if not parent or not getattr(parent, "pre_compression_snapshot", False):
+            break
+        segments.append(parent)
+        seen.add(parent_id)
+        current = parent
+
+    if not segments:
+        return list(getattr(session, "messages", []) or [])
+
+    merged = []
+    for segment in reversed(segments):
+        merged = merge_session_messages_append_only(
+            merged,
+            getattr(segment, "messages", []) or [],
+            truncation_watermark=getattr(segment, "truncation_watermark", None),
+        )
+    return merge_session_messages_append_only(
+        merged,
+        getattr(session, "messages", []) or [],
+        truncation_watermark=getattr(session, "truncation_watermark", None),
+    )
 
 
 def _merged_session_messages_for_display(session, cli_messages=None) -> list:
     """Return the message coordinate space exposed by ``GET /api/session``.
 
     Messaging sessions can have a WebUI sidecar transcript plus messages from
-    the Agent/CLI store. The frontend computes fork keep-counts against this
-    merged display list, so branch/fork must slice the same list rather than
-    the sidecar-only ``session.messages`` array.
+    the Agent/CLI store. WebUI compression continuations can have an archived
+    snapshot parent plus a child continuation sidecar. The frontend computes
+    fork keep-counts against this merged display list, so branch/fork must slice
+    the same list rather than the sidecar-only ``session.messages`` array.
     """
     cli_messages = list(cli_messages or [])
-    sidecar_messages = list(getattr(session, "messages", []) or [])
+    sidecar_messages = _webui_sidecar_lineage_messages_for_display(session)
     if cli_messages:
         if sidecar_messages and sidecar_messages != cli_messages:
             if len(sidecar_messages) >= len(cli_messages):
@@ -3519,6 +3587,15 @@ _LOGIN_LOCALE = {
         "btn": "Oturum a\u00e7",
         "invalid_pw": "Ge\u00e7ersiz \u015fifre",
         "conn_failed": "Ba\u011flant\u0131 ba\u015far\u0131s\u0131z",
+    },
+    "pl": {
+        "lang": "pl-PL",
+        "title": "Zaloguj si\u0119",
+        "subtitle": "Wpisz has\u0142o, aby kontynuowa\u0107",
+        "placeholder": "Has\u0142o",
+        "btn": "Zaloguj si\u0119",
+        "invalid_pw": "Nieprawid\u0142owe has\u0142o",
+        "conn_failed": "Po\u0142\u0105czenie nie powiod\u0142o si\u0119",
     },
 }
 
@@ -5312,6 +5389,14 @@ def handle_get(handler, parsed) -> bool:
             msg_before = int(_msg_before) if _msg_before else None
         except (ValueError, TypeError):
             msg_before = None
+        # ?expand_renderable=1 — sent ONLY by the initial cold-load fetch. When
+        # set, the tail window is expanded backward until it holds ~msg_limit
+        # *renderable* rows (tool/separator/compression rows are UI-filtered) so
+        # a tool-heavy session doesn't cold-load showing 1-2 visible messages.
+        # The "Load earlier" cumulative path and msg_before pages do NOT send it,
+        # keeping their raw transport cap (#3790).
+        _expand_renderable = query.get("expand_renderable", [None])[0]
+        expand_renderable = str(_expand_renderable).strip() in ("1", "true", "True")
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
@@ -5358,7 +5443,7 @@ def handle_get(handler, parsed) -> bool:
                     _all_msgs = _merged_session_messages_for_display(s, cli_messages)
                 else:
                     _all_msgs = merge_session_messages_append_only(
-                        s.messages,
+                        _webui_sidecar_lineage_messages_for_display(s),
                         state_db_messages,
                         truncation_watermark=getattr(s, "truncation_watermark", None),
                     )
@@ -5396,6 +5481,7 @@ def handle_get(handler, parsed) -> bool:
                     _all_msgs,
                     msg_limit=msg_limit,
                     msg_before=msg_before,
+                    expand_renderable=expand_renderable,
                 )
                 if msg_before is not None:
                     _before_idx = max(0, min(int(msg_before), len(_all_msgs)))
