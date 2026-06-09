@@ -66,6 +66,37 @@ function _deferStreamErrorIfOffline(){
 
 document.addEventListener('visibilitychange', _markActiveSessionViewedOnReturn);
 window.addEventListener('focus', _markActiveSessionViewedOnReturn);
+
+// Delegated click handler for the interim-progress-note collapse toggle (#2403).
+// Delegation (not a per-element listener) is required because the live turn's
+// DOM is snapshotted/restored via outerHTML/innerHTML on session switch
+// (snapshotLiveTurnHtmlForSession / restoreLiveTurnHtmlForSession in ui.js),
+// which strips element listeners. A document-level handler survives the
+// restore so a restored toggle stays interactive and collapsed notes never
+// become permanently unreachable. State lives in the DOM (presence of
+// .interim-collapsed + data-threshold on the toggle), so the handler is
+// stateless and works on freshly-created and restored toggles alike.
+function _interimCollapseDelegatedClick(e){
+  const toggle=e.target&&e.target.closest?e.target.closest('.interim-collapse-toggle'):null;
+  if(!toggle) return;
+  const blocks=toggle.parentElement;
+  if(!blocks) return;
+  const threshold=parseInt(toggle.dataset.threshold,10)||3;
+  const hidden=blocks.querySelectorAll('.interim-collapsed');
+  if(hidden.length){
+    hidden.forEach(el=>el.classList.remove('interim-collapsed'));
+    toggle.dataset.expanded='1';
+    toggle.textContent='Collapse';
+  } else {
+    const all=Array.from(blocks.querySelectorAll('[data-interim="1"]'));
+    const rehide=all.slice(0,all.length-threshold);
+    rehide.forEach(el=>el.classList.add('interim-collapsed'));
+    toggle.dataset.expanded='';
+    toggle.textContent='Show '+rehide.length+' earlier update'+(rehide.length===1?'':'s');
+  }
+}
+document.addEventListener('click', _interimCollapseDelegatedClick);
+
 // TTS: pause speech synthesis when user focuses the composer (#499)
 const _msgEl=document.getElementById('msg');
 if(_msgEl) _msgEl.addEventListener('focus', ()=>{ if('speechSynthesis' in window && speechSynthesis.speaking) speechSynthesis.pause(); });
@@ -75,6 +106,217 @@ let _selectedTextReplyBtn=null;
 let _selectedTextReplyText='';
 let _selectedTextReplyRaf=0;
 const _persistentStateToastSeen=new Set();
+const _thinkPairs=[
+  {open:'<think>',close:'</think>'},
+  {open:'<|channel>thought\n',close:'<channel|>'},
+  {open:'<|turn|>thinking\n',close:'<turn|>'}
+];
+
+function _thinkingFenceMarkerAt(text, index){
+  // A fenced code block opener may be indented up to 3 spaces in Markdown
+  // (4+ spaces is an indented code block, handled separately). Only treat the
+  // marker as a fence when it sits at a line start after optional 1-3 spaces.
+  if(index>0&&text[index-1]!=='\n'){
+    let back=index-1, spaces=0;
+    while(back>=0&&text[back]===' '&&spaces<3){back--;spaces++;}
+    if(!(back<0||text[back]==='\n')) return '';
+  }
+  if(text.startsWith('```',index)) return '```';
+  if(text.startsWith('~~~',index)) return '~~~';
+  return '';
+}
+
+function _nextThinkingOpener(text, start){
+  // Index of the earliest complete thinking opener at/after `start`, or -1.
+  // Cheap indexOf per opener — lets the scanner bulk-skip plain trailing content
+  // instead of walking it char-by-char (#3633 Codex per-token perf catch).
+  let best=-1;
+  for(const p of _thinkPairs){
+    const i=text.indexOf(p.open,start);
+    if(i!==-1&&(best===-1||i<best)) best=i;
+  }
+  return best;
+}
+
+function _textTailIsPartialOpener(text){
+  // True when the END of text is a non-empty proper prefix of some opener
+  // (e.g. "<thi" for "<think>"). Decides whether a streaming tail might be a
+  // forming block worth code-aware handling.
+  for(const p of _thinkPairs){
+    const m=Math.min(p.open.length-1,text.length);
+    for(let n=m;n>0;n--){ if(p.open.startsWith(text.slice(text.length-n))) return true; }
+  }
+  return false;
+}
+
+function _lineIsIndentedCode(text, lineStart){
+  // True when the line beginning at lineStart is a markdown indented code block
+  // line (>=4 leading spaces or a leading tab, and not blank). lineStart must be
+  // the first char of the line. Only inspects the line's leading chars, not the
+  // whole document (the per-character variant was O(n^2) on long no-newline
+  // content — #3633 Codex perf catch).
+  if(lineStart>=text.length) return false;
+  if(text[lineStart]==='\t'||text.startsWith('    ',lineStart)){
+    let nl=text.indexOf('\n',lineStart);
+    if(nl===-1) nl=text.length;
+    return text.slice(lineStart,nl).trim()!=='';
+  }
+  return false;
+}
+
+function _mergeInlineThinkingReasoning(existingReasoning, extractedParts){
+  let out=String(existingReasoning||'').trim();
+  (Array.isArray(extractedParts)?extractedParts:[]).forEach(function(part){
+    const item=String(part||'').trim();
+    if(!item) return;
+    if(!out){out=item;return;}
+    if(out===item||out.split('\n\n').some(function(existing){return existing.trim()===item;})) return;
+    out += '\n\n' + item;
+  });
+  return out;
+}
+
+function _extractInlineThinkingFromContent(rawContent, existingReasoning, options){
+  // Code-aware extraction (must mirror api/streaming.py
+  // _extract_inline_thinking_from_content): thinking tags inside a triple-fence,
+  // an inline single-backtick code span, or an indented code block are LEFT
+  // VISIBLE. options.streaming gates partial/unclosed handling — only during a
+  // live stream does an unmatched open tag mean "still thinking"; on the
+  // reload/render path an unclosed tag stays visible content (#3633 Codex catch).
+  const streaming=!!(options&&options.streaming);
+  const text=String(rawContent||'');
+  if(!text){
+    const reasoning=String(existingReasoning||'').trim();
+    return {reasoning,content:text,thinkingText:reasoning,displayText:text,inThinking:false};
+  }
+  // Fast path (#3633 Codex perf catch — _parseStreamState / syncInflightAssistantMessage
+  // call this on the FULL accumulator on every streamed token, so the common no-tag
+  // case must not do the O(length) char walk per call). If no complete opener is
+  // present AND — when streaming — the tail is not a prefix of an opener, there is
+  // nothing to extract: return the text unchanged (two cheap substring scans).
+  if(!_thinkPairs.some(p=>text.indexOf(p.open)!==-1)){
+    let tailIsPartialOpener=false;
+    if(streaming){
+      for(const p of _thinkPairs){
+        const maxPrefix=Math.min(p.open.length-1,text.length);
+        for(let n=maxPrefix;n>0;n--){
+          if(p.open.startsWith(text.slice(text.length-n))){tailIsPartialOpener=true;break;}
+        }
+        if(tailIsPartialOpener) break;
+      }
+    }
+    if(!tailIsPartialOpener){
+      const reasoning=String(existingReasoning||'').trim();
+      return {reasoning,content:text,thinkingText:reasoning,displayText:text,inThinking:false};
+    }
+  }
+  const visible=[];
+  const extracted=[];
+  let cursor=0;
+  let index=0;
+  let fence='';
+  let inBacktick=false;
+  let inThinking=false;
+  // Incremental O(1)-per-iteration line state + seen-nonspace flag (the previous
+  // per-character line scan + slice(0,index).trim() were O(n^2) on long
+  // no-newline content — #3633 Codex perf catch).
+  let lineIsIndentedCode=_lineIsIndentedCode(text,0);
+  let seenNonspace=false;
+  // Only lstrip the final content when a LEADING thinking block/prefix was
+  // removed — a reply that legitimately starts with indented code / whitespace
+  // and has no leading thinking wrapper keeps its leading whitespace (#3633
+  // Codex catch).
+  let leadingRemoved=false;
+  // Index of the next complete opener at/after `index` — lets the scanner bulk-skip
+  // plain trailing content instead of walking it char-by-char every streamed token
+  // (#3633 Codex per-token perf catch).
+  let nextOpener=_nextThinkingOpener(text,0);
+  while(index<text.length){
+    if(nextOpener===-1||index>nextOpener) nextOpener=_nextThinkingOpener(text,index);
+    if(nextOpener===-1){
+      // No further COMPLETE opener ahead — remaining tail is plain and is
+      // appended in one slice, EXCEPT during streaming when the tail is a prefix
+      // of an opener ("...<thi"): it may be a forming block and must be
+      // suppressed, but ONLY if outside code context (a partial opener inside
+      // inline-backtick / fenced / indented code stays visible — master parity).
+      // Code state needs the char walk, so fall through in that case (bounded —
+      // a partial tail is a transient single token) instead of bulk-skipping.
+      if(streaming&&_textTailIsPartialOpener(text)){
+        // fall through to the code-aware char walk for the tail
+      } else {
+        break;
+      }
+    }
+    const ch=text[index];
+    if(index>0&&text[index-1]==='\n') lineIsIndentedCode=_lineIsIndentedCode(text,index);
+    const marker=_thinkingFenceMarkerAt(text,index);
+    if(marker) fence=(fence===marker)?'':(fence||marker);
+    if(!fence&&!marker&&ch==='`') inBacktick=!inBacktick;
+    const inCode=!!fence||inBacktick||lineIsIndentedCode;
+    if(!inCode){
+      let pair=null;
+      for(const candidate of _thinkPairs){
+        if(text.startsWith(candidate.open,index)){pair=candidate;break;}
+      }
+      if(pair){
+        const closeIndex=text.indexOf(pair.close,index+pair.open.length);
+        if(closeIndex===-1){
+          // Unclosed open tag. A LEADING unclosed block (nothing visible before
+          // it) is a genuine thinking trace cut off mid-thought → reasoning
+          // (master #3455 leading-only intent + live "still thinking"). An
+          // unclosed tag AFTER visible content on the reload/render path is
+          // almost always a literal typed tag — leave it (and following prose)
+          // visible so nothing is silently truncated (#3633 Codex catch).
+          const leading=!seenNonspace;
+          if(!streaming&&!leading) break;
+          if(leading) leadingRemoved=true;
+          visible.push(text.slice(cursor,index));
+          const partial=text.slice(index+pair.open.length);
+          if(partial) extracted.push(partial);
+          inThinking=true;
+          cursor=text.length;
+          index=text.length;
+          break;
+        }
+        visible.push(text.slice(cursor,index));
+        extracted.push(text.slice(index+pair.open.length,closeIndex));
+        if(!seenNonspace) leadingRemoved=true;
+        seenNonspace=true;
+        index=closeIndex+pair.close.length;
+        cursor=index;
+        continue;
+      }
+      if(streaming){
+        let matchedPartial=false;
+        for(const candidate of _thinkPairs){
+          const rest=text.slice(index);
+          if(rest.length<candidate.open.length&&candidate.open.startsWith(rest)){
+            if(!seenNonspace) leadingRemoved=true;
+            visible.push(text.slice(cursor,index));
+            inThinking=true;
+            cursor=text.length;
+            index=text.length;
+            matchedPartial=true;
+            break;
+          }
+        }
+        if(matchedPartial||index>=text.length) break;
+      }
+    }
+    if(ch.trim()!=='') seenNonspace=true;
+    index++;
+  }
+  if(cursor<text.length) visible.push(text.slice(cursor));
+  const content=leadingRemoved?visible.join('').replace(/^\s+/,''):visible.join('');
+  const reasoning=_mergeInlineThinkingReasoning(existingReasoning,extracted);
+  return {reasoning,content,thinkingText:reasoning,displayText:content,inThinking};
+}
+
+if(typeof window!=='undefined'){
+  window._extractInlineThinkingFromContentForRender=function(rawContent, existingReasoning){
+    return _extractInlineThinkingFromContent(rawContent, existingReasoning, {streaming:false});
+  };
+}
 
 function enhanceMarkdownTables(root){
   if(!root||!root.querySelectorAll) return;
@@ -315,6 +557,113 @@ function _appendSelectedTextReplyToComposer(text){
   if(typeof showToast==='function') showToast(_selectedTextReplyT('selected_text_reply_appended', 'Selected text added to composer'), 1600);
   return true;
 }
+
+function insertSavedPromptIntoComposer(text){
+  const composer=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
+  if(!composer||!text)return;
+  const current=String(composer.value||'');
+  composer.value=current.trim()?`${current.replace(/\s+$/,'')}\n\n${text}\n\n`:`${text}\n\n`;
+  composer.focus();
+  try{composer.setSelectionRange(composer.value.length, composer.value.length);}catch(_e){}
+  composer.dispatchEvent(new Event('input',{bubbles:true}));
+  if(typeof autoResize==='function') autoResize();
+}
+
+let _savedPromptsCache=null;
+
+async function _loadSavedPrompts(){
+  try{
+    const data=await api('/api/prompts');
+    _savedPromptsCache=Array.isArray(data&&data.prompts)?data.prompts:[];
+  }catch(_e){_savedPromptsCache=[];}
+  return _savedPromptsCache;
+}
+
+async function toggleSavedPromptsPopup(){
+  const popup=(typeof $==='function'&&$('savedPromptsPopup'))||document.getElementById('savedPromptsPopup');
+  const btn=(typeof $==='function'&&$('btnSavedPrompts'))||document.getElementById('btnSavedPrompts');
+  if(!popup)return;
+  if(popup.style.display!=='none'){
+    popup.style.display='none';
+    if(btn)btn.setAttribute('aria-expanded','false');
+    return;
+  }
+  popup.innerHTML='<div class="saved-prompts-loading">Loading…</div>';
+  popup.style.display='flex';
+  if(btn)btn.setAttribute('aria-expanded','true');
+  const prompts=await _loadSavedPrompts();
+  popup.innerHTML='';
+  if(!prompts.length){
+    const empty=document.createElement('div');
+    empty.className='saved-prompts-empty';
+    empty.textContent=(typeof t==='function'&&t('saved_prompts_empty'))||'No saved prompts yet.';
+    popup.appendChild(empty);
+  }else{
+    for(const p of prompts){
+      const row=document.createElement('div');
+      row.className='saved-prompt-row';
+      row.setAttribute('role','menuitem');
+      const label=document.createElement('span');
+      label.className='saved-prompt-label';
+      label.textContent=p.label||p.text;
+      label.title=p.text;
+      row.onclick=()=>{
+        insertSavedPromptIntoComposer(p.text);
+        popup.style.display='none';
+        if(btn)btn.setAttribute('aria-expanded','false');
+      };
+      const del=document.createElement('button');
+      del.className='saved-prompt-delete';
+      del.type='button';
+      del.title=(typeof t==='function'&&t('saved_prompts_delete'))||'Delete';
+      del.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      del.onclick=async(e)=>{
+        e.stopPropagation();
+        try{await api('/api/prompts',{method:'DELETE',body:JSON.stringify({id:p.id})});}catch(_e){}
+        _savedPromptsCache=null;
+        await toggleSavedPromptsPopup();
+        await toggleSavedPromptsPopup();
+      };
+      row.appendChild(label);
+      row.appendChild(del);
+      popup.appendChild(row);
+    }
+  }
+  const addRow=document.createElement('div');
+  addRow.className='saved-prompt-add-row';
+  const saveBtn=document.createElement('button');
+  saveBtn.type='button';
+  saveBtn.className='saved-prompt-save-btn';
+  saveBtn.textContent=(typeof t==='function'&&t('saved_prompts_save_current'))||'Save current input';
+  saveBtn.onclick=async()=>{
+    const msgEl=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
+    const text=(msgEl&&msgEl.value||'').trim();
+    if(!text){
+      if(typeof showToast==='function') showToast((typeof t==='function'&&t('saved_prompts_empty_input'))||'Type a prompt first',2000,'error');
+      return;
+    }
+    try{await api('/api/prompts',{method:'POST',body:JSON.stringify({text})});}catch(_e){
+      if(typeof showToast==='function') showToast(_e&&_e.message||'Failed to save prompt',2000,'error');
+      return;
+    }
+    _savedPromptsCache=null;
+    popup.style.display='none';
+    if(btn)btn.setAttribute('aria-expanded','false');
+    if(typeof showToast==='function') showToast((typeof t==='function'&&t('saved_prompts_saved'))||'Prompt saved',1600);
+  };
+  addRow.appendChild(saveBtn);
+  popup.appendChild(addRow);
+}
+
+document.addEventListener('click',(e)=>{
+  const popup=(typeof $==='function'&&$('savedPromptsPopup'))||document.getElementById('savedPromptsPopup');
+  const btn=(typeof $==='function'&&$('btnSavedPrompts'))||document.getElementById('btnSavedPrompts');
+  if(!popup||popup.style.display==='none')return;
+  if(!popup.contains(e.target)&&e.target!==btn&&!(btn&&btn.contains(e.target))){
+    popup.style.display='none';
+    if(btn)btn.setAttribute('aria-expanded','false');
+  }
+},{capture:false});
 
 function _selectedTextReplyButton(){
   if(_selectedTextReplyBtn)return _selectedTextReplyBtn;
@@ -1028,7 +1377,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     ? (_liveInflightAssistantMessages.length>1
       ? (_fullInflightAssistant || _joinedInflightSegments)
       : (_liveInflightAssistant
-        ? (_liveInflightAssistant.content || '')
+        ? (_fullInflightAssistant || _liveInflightAssistant.content || '')
         : _fullInflightAssistant))
     : '';
   const _lastLiveReasoning = reconnecting
@@ -1073,13 +1422,6 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   // On reconnect, the assistantBody already has partial smd-rendered content.
   // We clear it on first new token and restart the parser from the reconnect point.
   let _smdReconnect=reconnecting;
-  // Thinking tag patterns for streaming display
-  const _thinkPairs=[
-    {open:'<think>',close:'</think>'},
-    {open:'<|channel>thought\n',close:'<channel|>'},
-    {open:'<|turn|>thinking\n',close:'<turn|>'}  // Gemma 4
-  ];
-
   function _isActiveSession(){
     return !!(S.session&&S.session.session_id===activeSid);
   }
@@ -1237,30 +1579,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   // reasoning channel, which would otherwise bloat the persisted session
   // message by 30-50% and miss the m.reasoning field used by the thinking card.
   function _splitThinkFromContent(rawContent, existingReasoning){
-    const text=String(rawContent||'');
-    if(!text) return {reasoning:existingReasoning||'', content:text};
-    // Extract exactly ONE leading think block (after lstrip), matching the
-    // streaming renderer's _streamDisplay/_parseStreamState semantics EXACTLY —
-    // both strip only the first leading block. A closed <think>...</think> that
-    // appears MID-BODY is, by the renderer's definition, visible content (e.g. a
-    // literal tag inside a fenced code block); a whole-body scan would silently
-    // move it into m.reasoning. And looping multiple leading blocks here (when the
-    // renderer strips only one) would make persisted/reload content diverge from
-    // the live stream. So: leading, single, partial-open left intact (#3455 review, Codex).
-    let extracted='';
-    let remaining=text;
-    const trimmed=text.trimStart();
-    for(const {open,close} of _thinkPairs){
-      if(!trimmed.startsWith(open)) continue;
-      const ci=trimmed.indexOf(close,open.length);
-      if(ci===-1) break; // partial open — leave intact for the live renderer
-      extracted=trimmed.slice(open.length,ci);
-      remaining=trimmed.slice(ci+close.length).replace(/^\s+/,'');
-      break;
-    }
-    if(!extracted) return {reasoning:existingReasoning||'', content:rawContent};
-    const finalReasoning=existingReasoning?existingReasoning+'\n\n'+extracted:extracted;
-    return {reasoning:finalReasoning, content:remaining};
+    return _extractInlineThinkingFromContent(rawContent, existingReasoning, {streaming:false});
   }
   function syncInflightAssistantMessage(){
     const inflight=INFLIGHT[activeSid];
@@ -1510,57 +1829,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     return s.trim();
   }
   function _streamDisplay(){
-    const raw=_stripXmlToolCalls(assistantText);
-    // Always run think-block stripping even when reasoningText is populated.
-    // Some providers emit reasoning content via on_reasoning AND wrap it in
-    // <think> tags in the token stream — the early-return caused the thinking
-    // card and main response to show identical content (closes #852).
-    for(const {open,close} of _thinkPairs){
-      // Trim leading whitespace before checking for the open tag — some models
-      // (e.g. MiniMax) emit newlines before <think>.
-      const trimmed=raw.trimStart();
-      if(trimmed.startsWith(open)){
-        const ci=trimmed.indexOf(close,open.length);
-        if(ci!==-1){
-          // Thinking block complete — strip it, show the rest
-          return trimmed.slice(ci+close.length).replace(/^\s+/,'');
-        }
-        // Still inside thinking block — show placeholder
-        return '';
-      }
-      // Hide partial tag prefixes while streaming so users don't see
-      // `<thi`, `<think`, etc. before the model finishes the token.
-      if(open.startsWith(trimmed)) return '';
-    }
-    return raw;
+    return _extractInlineThinkingFromContent(_stripXmlToolCalls(assistantText), liveReasoningText, {streaming:true}).content;
   }
   function _parseStreamState(){
-    const raw=_stripXmlToolCalls(assistantText);
-    if(reasoningText){
-      return {thinkingText:liveReasoningText, displayText:_streamDisplay(), inThinking:false};
-    }
-    for(const {open,close} of _thinkPairs){
-      const trimmed=raw.trimStart();
-      if(trimmed.startsWith(open)){
-        const ci=trimmed.indexOf(close,open.length);
-        if(ci!==-1){
-          return {
-            thinkingText: trimmed.slice(open.length, ci).trim(),
-            displayText: trimmed.slice(ci+close.length).replace(/^\s+/,''),
-            inThinking:false,
-          };
-        }
-        return {
-          thinkingText: trimmed.slice(open.length).trim(),
-          displayText:'',
-          inThinking:true,
-        };
-      }
-      if(open.startsWith(trimmed)){
-        return {thinkingText:'', displayText:'', inThinking:true};
-      }
-    }
-    return {thinkingText:'', displayText:raw, inThinking:false};
+    return _extractInlineThinkingFromContent(_stripXmlToolCalls(assistantText), liveReasoningText, {streaming:true});
   }
   function _renderLiveThinking(parsed){
     if(window._showThinking===false){removeThinking();return;}
@@ -1832,8 +2104,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   function _streamFadePauseAfter(text, paragraphBreakIndex){
     if(paragraphBreakIndex>=0) return 90;
     const trimmed=String(text||'').trimEnd();
-    if(/[.!?]["')\]]*$/.test(trimmed)) return 45;
-    if(/[:;]["')\]]*$/.test(trimmed)) return 30;
+    if(/[.!?]["\x27)\]]*$/.test(trimmed)) return 45;
+    if(/[:;]["\x27)\]]*$/.test(trimmed)) return 30;
     return 0;
   }
   function _streamFadeNextText(targetText){
@@ -2292,7 +2564,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // Throttling to 66ms intervals prevents this pileup without noticeable
     // visual degradation — streaming text updates still feel immediate.
     // performance.now() is monotonic so tab suspend/resume and NTP adjustments
-    // can't produce negative or enormous deltas.
+    // cannot produce negative or enormous deltas.
     const sinceLastMs=performance.now()-_lastRenderMs;
     const _doRender=()=>{
       _pendingRafHandle=null;
@@ -2433,9 +2705,39 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       }
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       ensureAssistantRow(true);
+      if(assistantRow) assistantRow.setAttribute('data-interim','1');
       _flushPendingSegmentRender({force:true});
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
       if(typeof closeCurrentLiveActivityGroup==='function') closeCurrentLiveActivityGroup();
+      // Collapse old interim notes once more than INTERIM_COLLAPSE_THRESHOLD accumulate.
+      const INTERIM_COLLAPSE_THRESHOLD=3;
+      if(visibleInterimSnippets.length>INTERIM_COLLAPSE_THRESHOLD&&assistantRow){
+        const blocks=assistantRow.parentElement;
+        if(blocks){
+          const allInterim=Array.from(blocks.querySelectorAll('[data-interim="1"]'));
+          const toHide=allInterim.slice(0,allInterim.length-INTERIM_COLLAPSE_THRESHOLD);
+          let toggle=blocks.querySelector('.interim-collapse-toggle');
+          if(!toggle){
+            toggle=document.createElement('span');
+            toggle.className='interim-collapse-toggle';
+            // No per-element listener: clicks are handled by a delegated
+            // document-level handler (see _interimCollapseDelegatedClick) so
+            // the toggle keeps working after a live-turn DOM restore
+            // (snapshotLiveTurnHtmlForSession/restoreLiveTurnHtmlForSession
+            // rebuild via innerHTML, which would drop a direct listener and
+            // leave the collapsed notes permanently unreachable). The
+            // threshold rides on the markup so the handler stays stateless.
+            toggle.dataset.threshold=String(INTERIM_COLLAPSE_THRESHOLD);
+            if(toHide.length) toHide[0].before(toggle);
+          }
+          // Skip re-collapse when the user expanded manually; always update the stored count.
+          if(!toggle.dataset.expanded){
+            toHide.forEach(el=>el.classList.add('interim-collapsed'));
+          }
+          const stillHidden=blocks.querySelectorAll('[data-interim="1"].interim-collapsed').length;
+          if(stillHidden) toggle.textContent='Show '+stillHidden+' earlier update'+(stillHidden===1?'':'s');
+        }
+      }
       recordActivityBoundary();
       _resetAssistantSegment();
       _scheduleRender();
