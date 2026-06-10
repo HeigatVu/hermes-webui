@@ -3,6 +3,72 @@
 
 ## [Unreleased]
 
+## [v0.51.350] — 2026-06-10 — Release LN (session-move / project-delete timeout fix)
+
+### Fixed
+
+- **Moving a session into a project, or deleting a project, no longer times out with "Request timed out" while a session is streaming.** Two distinct causes: (1) `/api/session/move` acquired the per-session lock with no deadline, so a slow checkpoint save on the streaming thread (e.g. on WSL/DrvFs) could outlast the browser's 30s abort — it now acquires with a 5s timeout and returns an actionable HTTP 503 instead of hanging; (2) `/api/projects/delete` re-saved every assigned session (O(N) full-history rewrites), which alone could exceed 30s for a project with many large sessions — for an actively-streaming session it now clears the project link on the live in-memory session (persisted by the streaming thread's own next save) instead of issuing a competing write, and guards each per-session update. (#3746)
+
+## [v0.51.349] — 2026-06-10 — Release LM (custom-proxy model ID preservation)
+
+### Fixed
+
+- **Custom providers with a remote `base_url` no longer truncate model IDs that contain a `/`.** A `custom` provider (bare or named `custom:<slug>`) pointed at a vendor-routing proxy (LiteLLM, a Bedrock gateway, etc.) is now passed the model ID exactly as selected when the prefix is an intrinsic routing segment — e.g. `bedrock/opus-4-6` reaches the proxy whole instead of being silently truncated to `opus-4-6`, which caused `403 model "opus-4-6" is not allowed`. A prefix that is genuinely redundant with the model's own first-party namespace is still stripped (`openai/gpt-5.4` → `gpt-5.4`), and the strip for real first-party providers pointed at an OpenAI-compatible proxy (e.g. `provider: openai`) is unchanged. If your proxy registers a model under a first-party-prefixed key (e.g. `anthropic/claude-opus-4.6`), list it under a `custom_providers[]` entry to route the full id through. (#3872)
+
+## [v0.51.348] — 2026-06-10 — Release LL (Phase 0 hotfix: timeout regression + data-loss + leaks)
+
+### Fixed
+
+- **"Request timed out" during approval/clarify turns no longer fires from browser connection-pool exhaustion.** v0.51.340 added `/api/session/stream` as a 6th persistent SSE `EventSource`. Browsers cap HTTP/1.1 at 6 connections per origin, so with all 6 long-lived streams open the next `fetch()` — including the approval/clarify POST itself — queued indefinitely and surfaced as a timeout toast even though the server responded normally. Approval and clarify prompts now use HTTP polling (approval 1.5 s, clarify 3 s) via the existing fallback-poll helpers, freeing 2 connection slots. (#3913, fixes #3807 / #3748 / #3014)
+- **Queued follow-up messages and draft-only sessions are more durable across refresh and tab restore.** Session queues now mirror to both `sessionStorage` and `localStorage`, restore through one shared helper (falling back to the durable copy when `sessionStorage` is missing after a tab/process restore), clear stale queue state from both layers, and keep zero-message sessions when they still own unsent composer draft text or files. (#3906, #3108)
+- **Settings panel no longer auto-reopens while you are on the Chat panel.** `switchSettingsSection()` force-mutated the current panel back to `settings` instead of just remembering the section for the next time settings is opened; visible on iPad/touch. (#3909)
+
+### Performance
+
+- **Kanban API requests no longer leak a file descriptor each.** `api/kanban_bridge.py::_conn()` returned a raw connection used as a `with` block, but sqlite3's context manager only scopes the transaction and never closes the FD. On a long-lived server these accumulated, pinning stale WAL snapshots and starving checkpoints for gateway/CLI workers sharing the board DB. `_conn()` now uses the closing context manager. (#3904)
+
+## [v0.51.347] — 2026-06-09 — Release LK (streaming & render reliability cluster)
+
+### Fixed
+
+- **Mid-stream content no longer flickers (disappears and reappears) during a live turn.** When `renderMessages()` rebuilt the transcript while a session was actively streaming (e.g. a clarify-response echo or a CLI-import refresh), the `inner.innerHTML=''` wipe detached the live assistant turn node that the streaming markdown parser keeps writing into, so the streamed text vanished until the next stream event. The live turn's DOM node is now preserved across the rebuild and re-attached so the parser target stays connected and the text never blanks. (#3877)
+- **Recovered turns with empty visible content no longer render a blank transcript.** A run-journal-recovered assistant anchor (empty content + a `reasoning` payload + recovery marker) extracted no inline thinking text and rendered nothing, so a session made of such rows painted as only date separators. Two fixes: the backend now reuses one empty recovered anchor per stream instead of appending a fresh empty row on every lazy recovery retry (which previously bloated sessions with thousands of content-less rows), and the renderer surfaces the message's reasoning payload as a Thinking card for empty-content turns so the turn is never blank. (#3875)
+- **`stream_end` no longer finalizes a turn prematurely when the server is still active.** When a `stream_end` event arrived while the session was still streaming server-side, the client could settle to a partial state. It now polls the persisted session and retries settlement (bounded) until the server reports the stream complete, and the SSE error path defers to an in-flight recovery instead of starting a competing reconnect. (#3885)
+- **Markdown list markers and indentation are preserved around LaTeX blocks.** Continuation lines, nested indentation, and KaTeX-placeholder lines inside list items no longer break the list into fragments or lose their markers. (#3830)
+
+### Changed
+
+- **Worklog details settings now align with the live-to-final model.** The old "Activity expanded by default" setting is renamed to **Worklog details** (default folded), the legacy "Compact tool activity" preference is deprecated, and the Worklog renderer stays enabled for older installs that had saved `simplified_tool_calling=false`. (#3400, #3820)
+
+## [v0.51.346] — 2026-06-09 — Release LJ (PWA notification controls)
+
+### Added
+
+- **PWA notifications now use the service worker for reliable delivery, with explicit controls in Settings.** Browser notifications prefer `ServiceWorkerRegistration.showNotification()` (falling back to a direct `Notification` when no service worker is registered), which is the only notification path that works in an installed standalone PWA — notably iOS, where `new Notification()` is unavailable. Notification payloads now carry the originating session's deep link, icon, badge, and a stable per-session tag, and clicking a notification focuses an already-open tab for that session (or opens a new window) instead of yanking an unrelated tab away from what you were reading. Settings → Preferences gains **Enable notifications**, **Send test**, and a live permission-status readout. (#3196, #3229)
+
+## [v0.51.345] — 2026-06-09 — Release LI (model override picker for scheduled jobs)
+
+### Added
+
+- **Scheduled jobs can now set a per-job model override from the WebUI.** The Tasks → scheduled-jobs create/edit form has a new **Model Override** dropdown, populated from the configured `/api/models` catalog and grouped by provider (with provider context preserved so duplicate model IDs across providers stay distinguishable). The default option keeps the existing profile/system-default behavior; selections persist across edit and duplicate, can be cleared back to default, and the picker is disabled in no-agent mode. This surfaces the per-job model/provider override that hermes-agent's scheduler already supported, bringing the WebUI Tasks panel to parity with the CLI. (#3809)
+
+## [v0.51.344] — 2026-06-09 — Release LH (sidebar fork-lineage grouping)
+
+### Fixed
+
+- **Manual forks are no longer mis-grouped under compression-continuation lineage in the sidebar.** The sidebar's snapshot-grouping path walked through manual forks as if they were compression continuations, so a forked session could be collapsed under the wrong lineage root. Explicit manual forks (the marker `/api/session/branch` stamps) are now treated as lineage boundaries, while enriched child-session rows that attach under hidden compression segments stay independently visible until the later attachment pass. The background full-index rebuild thread now also pins its target `(SESSION_DIR, SESSION_INDEX_FILE)` and re-checks it under `_SESSION_INDEX_REBUILD_LOCK` before writing, so a concurrent active-session-dir switch can't make a rebuild write the wrong directory's index. (#3799, #3884)
+
+## [v0.51.343] — 2026-06-09 — Release LG (Phase-1 batch: sidebar stale-row refresh, workspace refresh cache, ja locale)
+
+### Fixed
+
+- **Sidebar no longer hides a messageful session that carries a stale `message_count: 0` index row.** When a stream was interrupted before the final index write, a titled session could keep a stale zero count and get filtered out of the sidebar even though `state.db` still had its messages. The read-side refresh now also fires for a row whose indexed `message_count` is 0 while `user_message_count > 0` (and whose sidecar mtime is newer than the index), self-healing the count from the sidecar — generalizing the earlier compression-lineage-only refresh to the ordinary interrupted-stream case without reintroducing the per-poll hydration cost (the `user_message_count` gate keeps empty Untitled drafts cheap). (#3740, #3883)
+- **Workspace file tree now shows files created in expanded subdirectories after a manual refresh.** The refresh button only reloaded the current directory level and left cached expanded child directories untouched, so background writes (cron jobs, CLI agents, external tools) into those descendants stayed invisible until a full reload. A manual refresh now clears the directory cache and re-fetches expanded descendants without losing tree state. (#3833, #3878)
+
+### Changed
+
+- **Japanese locale:** translated the 11 remaining English strings in the `ja` locale (Settings → Help panel labels/links, the cron-sessions setting, and the compression-queue composer placeholder). (#3880)
+
 ## [v0.51.342] — 2026-06-09 — Release LF (transcript + sidebar reliability: blank-transcript, missing-index stall, stale watermark)
 
 ### Fixed

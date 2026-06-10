@@ -1695,6 +1695,30 @@ def _is_local_server_provider(provider_id: str) -> bool:
     return False
 
 
+def _is_first_party_model(provider_id: str, model_id: str) -> bool:
+    """True when ``model_id`` is listed in ``provider_id``'s own static catalog.
+
+    Used to tell a *redundant* first-party prefix from an *intrinsic* routing
+    prefix on a bare ``custom`` endpoint. ``openai/gpt-5.4`` → gpt-5.4 is a real
+    OpenAI model, so ``openai/`` is a redundant leftover and strippable (#433).
+    But ``bedrock/opus-4-6`` → opus-4-6 is NOT in bedrock's first-party catalog
+    (those ids look like ``global.anthropic.claude-…``), so ``bedrock/`` is a
+    vendor-routing segment a proxy needs whole (#3872). Returns False on any
+    unknown provider or empty model so callers preserve the id.
+    """
+    provider = str(provider_id or "").strip().lower()
+    model = str(model_id or "").strip()
+    if not provider or not model:
+        return False
+    catalog = _PROVIDER_MODELS.get(provider)
+    if not isinstance(catalog, list):
+        return False
+    return any(
+        isinstance(entry, dict) and entry.get("id") == model
+        for entry in catalog
+    )
+
+
 def _base_url_points_at_local_server(base_url: str) -> bool:
     """True if base_url's host is a loopback or private IP (likely local server).
 
@@ -1998,13 +2022,37 @@ def resolve_model_provider(model_id: str) -> tuple:
             if (_is_local_server_provider(config_provider)
                     or _base_url_points_at_local_server(config_base_url)):
                 return model_id, config_provider, config_base_url
-            # Only strip the provider prefix when it's a known provider namespace
-            # (e.g. "openai/gpt-5.4" → "gpt-5.4" for a custom OpenAI-compatible proxy).
-            # Unknown prefixes (e.g. "zai-org/GLM-5.1" on DeepInfra) are intrinsic to
-            # the model ID and must be preserved — stripping them causes model_not_found.
-            if prefix in _PROVIDER_MODELS:
+            # Strip the provider prefix only when it's a known provider namespace
+            # AND stripping is the right call for this configured provider:
+            #
+            #  * A real first-party provider pointed at an OpenAI-compatible proxy
+            #    (e.g. provider=openai + base_url=litellm) expects the bare id —
+            #    "openai/gpt-5.4" → "gpt-5.4", "google/gemma-…" → "gemma-…". This
+            #    is the #433 behaviour and applies whenever config_provider is not
+            #    the bare "custom" pseudo-provider.
+            #
+            #  * A *bare* ``custom`` provider (or a named ``custom:<slug>``) is a
+            #    vendor-routing proxy (LiteLLM, Bedrock gateway, OpenRouter-style
+            #    multi-vendor endpoint). There we strip ONLY a prefix that is
+            #    redundant with the model's own first-party namespace
+            #    ("openai/gpt-5.4" → gpt-5.4, since gpt-5.4 is genuinely an OpenAI
+            #    model — #433). An intrinsic routing prefix whose bare id is NOT a
+            #    first-party model of that namespace is kept whole, because the
+            #    proxy routes on the full string and truncating it 403s "model not
+            #    allowed": "bedrock/opus-4-6" stays intact (opus-4-6 ∉ bedrock
+            #    catalog — #3872).
+            #
+            # Unknown prefixes (e.g. "zai-org/GLM-5.1" on DeepInfra) are intrinsic
+            # to the model ID and always preserved (#548). The redundant-prefix
+            # strip that matches the *configured* provider's own family is handled
+            # earlier by the ``prefix == config_provider`` branch.
+            _cp_lower = (config_provider or "").strip().lower()
+            _is_custom = _cp_lower == "custom" or _cp_lower.startswith("custom:")
+            if prefix in _PROVIDER_MODELS and (
+                not _is_custom or _is_first_party_model(prefix, bare)
+            ):
                 return bare, config_provider, config_base_url
-            # Unknown prefix (not a named provider) — pass full model_id through.
+            # Intrinsic / unknown prefix — pass the full model_id through unchanged.
             return model_id, config_provider, config_base_url
 
         # If prefix does NOT match config provider, the user picked a cross-provider model
@@ -5488,7 +5536,7 @@ _SETTINGS_DEFAULTS = {
     "font_size": "default",  # small | default | large | xlarge
     "session_jump_buttons": False,  # show Start/End transcript jump pills
     "session_endless_scroll": False,  # auto-load older transcript pages while scrolling upward
-    "activity_feed_expanded_default": False,  # expand Activity disclosures by default for new turns
+    "worklog_details_expanded_default": False,  # opt-in: expand Worklog details by default; default remains folded
     "pinned_sessions_limit": 3,  # maximum active pinned sessions shown in the sidebar
     "inflight_state_max_sessions": 8,  # max active-stream recovery snapshots kept in browser localStorage
     "inflight_state_max_messages": 24,  # max recent messages kept per recovery snapshot
@@ -5505,7 +5553,7 @@ _SETTINGS_DEFAULTS = {
     "rtl": False,  # right-to-left chat layout (chat messages + composer only)
     "notifications_enabled": False,  # browser notification when tab is in background
     "show_thinking": True,  # show/hide thinking/reasoning blocks in chat view
-    "simplified_tool_calling": True,  # render tools/thinking as compact inline timeline activity
+    "simplified_tool_calling": True,  # legacy compatibility; Worklog renderer remains enabled
     "terminal_auto_expand_on_output": False,  # auto-expand terminal panel when output arrives while collapsed
     "api_redact_enabled": True,  # redact sensitive data (API keys, secrets) from API responses
     "dashboard_plugins": {},  # plugin_name -> bool, opt-in per plugin (default off per PF-10b)
@@ -5514,7 +5562,13 @@ _SETTINGS_DEFAULTS = {
     "busy_input_mode": "queue",  # behavior when sending while agent is running: queue | interrupt | steer
     "password_hash": None,  # PBKDF2-HMAC-SHA256 hash; None = auth disabled
 }
-_SETTINGS_LEGACY_DROP_KEYS = {"assistant_language", "bubble_layout", "default_model"}
+_SETTINGS_LEGACY_DROP_KEYS = {
+    "assistant_language",
+    "bubble_layout",
+    "default_model",
+    "activity_feed_expanded_default",
+    "simplified_tool_calling",
+}
 _SETTINGS_THEME_VALUES = {"light", "dark", "system"}
 _SETTINGS_SKIN_VALUES = {
     "default",
@@ -5595,6 +5649,13 @@ def load_settings() -> dict:
         try:
             stored = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(stored, dict):
+                if (
+                    "worklog_details_expanded_default" not in stored
+                    and "activity_feed_expanded_default" in stored
+                ):
+                    settings["worklog_details_expanded_default"] = bool(
+                        stored.get("activity_feed_expanded_default")
+                    )
                 settings.update(
                     {
                         k: v
@@ -5621,6 +5682,7 @@ def load_settings() -> dict:
 _SETTINGS_ALLOWED_KEYS = set(_SETTINGS_DEFAULTS.keys()) - {
     "password_hash",
     "default_model",
+    "simplified_tool_calling",
 }
 _SETTINGS_ENUM_VALUES = {
     "send_key": {"enter", "ctrl+enter"},
@@ -5655,12 +5717,11 @@ _SETTINGS_BOOL_KEYS = {
     "rtl",
     "notifications_enabled",
     "show_thinking",
-    "simplified_tool_calling",
     "terminal_auto_expand_on_output",
     "api_redact_enabled",
     "session_jump_buttons",
     "session_endless_scroll",
-    "activity_feed_expanded_default",
+    "worklog_details_expanded_default",
 }
 # Language codes are validated as short alphanumeric BCP-47-like tags (e.g. 'en', 'zh', 'fr')
 _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8})?$")
@@ -5669,6 +5730,15 @@ _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8}
 def save_settings(settings: dict) -> dict:
     """Save settings to disk. Returns the merged settings. Ignores unknown keys."""
     current = load_settings()
+    if (
+        "worklog_details_expanded_default" not in settings
+        and "activity_feed_expanded_default" in settings
+    ):
+        settings["worklog_details_expanded_default"] = settings.get(
+            "activity_feed_expanded_default"
+        )
+    settings.pop("activity_feed_expanded_default", None)
+    settings.pop("simplified_tool_calling", None)
     pending_theme = current.get("theme")
     pending_skin = current.get("skin")
     theme_was_explicit = False
