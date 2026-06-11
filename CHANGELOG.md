@@ -3,9 +3,18 @@
 
 ## [Unreleased]
 
+## [v0.51.359] — 2026-06-11 — Release LW (assistant turn anchor phase 0 scaffold)
+
 ### Added
 
+- **Internal Stable Assistant Turn Anchors Phase 0 scaffold.** The browser now ships an inert `HermesAssistantTurnAnchors` helper surface plus a documented state-layer inventory for #3926, pinning current live/replay/settled source classifications and event dedupe precedence without changing visible chat rendering.
 - **New RFC: Stable Assistant Turn Anchors for Live-to-Final rendering.** Defines a frontend presentation/reconciliation model for anchoring one assistant turn across live streaming, settlement, replay/reload/recovery, Compact Worklog, Transparent Stream, terminal states, artifacts, and side effects. (#3926)
+
+## [v0.51.358] — 2026-06-11 — Release LV (first-run password bootstrap hardening)
+
+### Security
+
+- **First-run password setup is now gated to local clients.** While auth is disabled, `POST /api/settings` is intentionally reachable without a session for local first-run setup — but setting `_set_password` establishes WebUI ownership and issues a session. A non-local unauthenticated client could previously win first-run ownership by posting `_set_password`. First-password bootstrap is now gated the same way as onboarding setup (loopback/private networks only, or an explicit `HERMES_WEBUI_ONBOARDING_OPEN=1` opt-in for remote bootstrap), evaluated against the auth state captured at the start of the request. Normal authenticated password changes after auth is enabled are unaffected. (#3964)
 
 ## [v0.51.357] — 2026-06-11 — Release LU (mid-stream flicker tie fix)
 
