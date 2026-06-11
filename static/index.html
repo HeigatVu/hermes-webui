@@ -1146,6 +1146,13 @@
             </div>
             <div class="settings-field">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="settingsShowConversationOutline" style="width:15px;height:15px;accent-color:var(--accent)">
+                <span data-i18n="settings_label_conversation_outline">Show conversation outline</span>
+              </label>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings_desc_conversation_outline">Show a desktop-only jump list for user questions in the current conversation. Off by default.</div>
+            </div>
+            <div class="settings-field">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                 <input type="checkbox" id="settingsShowTps" style="width:15px;height:15px;accent-color:var(--accent)">
                 <span data-i18n="settings_label_token_speed">Show token speed (TPS)</span>
               </label>
@@ -1498,6 +1505,7 @@
 <script src="static/panels.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/onboarding.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/outline.js?v=__WEBUI_VERSION__" defer></script>
 
 <!-- Kanban: create/rename board modal — used for both flows. -->
 <div class="kanban-modal-overlay" id="kanbanBoardModal" hidden onclick="if(event.target===this)closeKanbanBoardModal()">
@@ -1579,6 +1587,22 @@
       <button type="button" class="btn primary" id="kanbanTaskModalSubmit" onclick="submitKanbanTaskModal()" data-i18n="create">Create</button>
     </div>
   </div>
+</div>
+<!-- Conversation Outline Panel (#2124): floating jump-to-question panel -->
+<button id="outlineToggleBtn" type="button" hidden
+  onclick="toggleOutlinePanel()"
+  title="Conversation outline"
+  aria-label="Toggle conversation outline"
+  aria-controls="outlinePanelWrapper">&#9776;</button>
+<div id="outlinePanelWrapper" hidden
+  role="navigation" aria-label="Conversation outline">
+  <div class="outline-header">
+    <span data-i18n="outline_title">Outline</span>
+    <button class="outline-close-btn" type="button"
+      onclick="toggleOutlinePanel()"
+      aria-label="Close outline">&#215;</button>
+  </div>
+  <div id="outlinePanel"></div>
 </div>
 </body>
 </html>

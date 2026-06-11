@@ -172,8 +172,8 @@ const LOCALES = {
     session_jump_end_label: 'Jump to end of session',
     session_new_message: 'New message',
     session_new_message_label: 'New message available, jump to end',
-    jump_to_question: 'to question',
-    jump_to_question_label: 'Jump to the question for this response',
+    jump_to_question: 'to response',
+    jump_to_question_label: 'Jump to the start of this response',
     queued_label: 'Sends after response',
     queued_count: (n) => n === 1 ? '1 queued' : `${n} queued`,
     queued_cancel: 'Cancel queued message',
@@ -630,6 +630,8 @@ const LOCALES = {
     settings_label_language: 'Language',
     settings_label_quota_chip: 'Show provider quota chip in composer',
     settings_desc_quota_chip: 'Displays an ambient remaining-quota indicator (e.g. OpenRouter credit balance) in the composer footer. Default off. Only visible on wide displays (≥1400px) when enabled, to keep the composer uncluttered on laptop and standard desktop widths.',
+    settings_label_conversation_outline: 'Show conversation outline',
+    settings_desc_conversation_outline: 'Show a desktop-only jump list for user questions in the current conversation. Off by default.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Show token usage',
@@ -1406,6 +1408,10 @@ const LOCALES = {
     checkpoint_diff_title: 'Changes in checkpoint',
     checkpoint_diff_no_changes: 'No differences found between this checkpoint and the current workspace.',
     checkpoint_diff_files_changed: (n) => `${n} file${n === 1 ? '' : 's'} changed`,
+    // ── Conversation Outline (#2124) ──
+    outline_title: 'Outline',
+    outline_empty: 'No questions yet.',
+    outline_loading: 'Loading…',
   },
 
   it: {
@@ -1576,8 +1582,8 @@ const LOCALES = {
     session_jump_end_label: 'Vai alla fine della sessione',
     session_new_message: 'Nuovo messaggio',
     session_new_message_label: 'Nuovo messaggio disponibile, vai alla fine',
-    jump_to_question: 'alla domanda',
-    jump_to_question_label: 'Vai alla domanda di questa risposta',
+    jump_to_question: 'alla risposta',
+    jump_to_question_label: 'Vai all\'inizio di questa risposta',
     queued_label: 'Inviato dopo la risposta',
     queued_count: (n) => n === 1 ? '1 in coda' : `${n} in coda`,
     queued_cancel: 'Annulla messaggio in coda',
@@ -2034,6 +2040,8 @@ const LOCALES = {
     settings_label_language: 'Lingua',
     settings_label_quota_chip: 'Mostra il chip della quota del provider nel compositore',
     settings_desc_quota_chip: "Mostra un indicatore di quota residua (es. saldo crediti OpenRouter) nel piè di pagina del compositore. Predefinito disattivato. Visibile solo su schermi larghi (≥1400px) quando attivato, per mantenere il compositore non affollato su laptop e desktop standard.",
+    settings_label_conversation_outline: 'Mostra struttura conversazione',
+    settings_desc_conversation_outline: 'Mostra un elenco di salto solo desktop per le domande utente nella conversazione corrente. Disattivato per impostazione predefinita.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Mostra uso token',
@@ -2802,6 +2810,9 @@ const LOCALES = {
     checkpoint_diff_title: 'Modifiche nel checkpoint',
     checkpoint_diff_no_changes: 'Nessuna differenza trovata tra questo checkpoint e il workspace attuale.',
     checkpoint_diff_files_changed: (n) => `${n} file modificat${n === 1 ? 'o' : 'i'}`,
+    outline_title: 'Struttura',
+    outline_empty: 'Nessuna domanda ancora.',
+    outline_loading: 'Caricamento…',
   },
 
   ja: {
@@ -2972,8 +2983,8 @@ const LOCALES = {
     session_jump_end_label: 'セッションの末尾へ移動',
     session_new_message: '新着メッセージ',
     session_new_message_label: '新着メッセージがあります。末尾へ移動',
-    jump_to_question: '質問へ',
-    jump_to_question_label: 'この回答の質問へ移動',
+    jump_to_question: '回答へ',
+    jump_to_question_label: 'この回答の先頭へ移動',
     queued_label: '応答後に送信',
     queued_count: (n) => `${n} 件キュー中`,
     queued_cancel: 'キューに入れたメッセージをキャンセル',
@@ -3430,6 +3441,8 @@ const LOCALES = {
     settings_label_language: '言語',
     settings_label_quota_chip: 'コンポーザーにプロバイダーのクォータチップを表示',
     settings_desc_quota_chip: 'コンポーザーのフッターに残りクォータインジケーター（例: OpenRouter のクレジット残高）を表示します。デフォルトはオフ。有効にした場合、ラップトップや標準デスクトップの幅でコンポーザーが混雑しないよう、ワイドディスプレイ（≥1400px）でのみ表示されます。',
+    settings_label_conversation_outline: '会話アウトラインを表示',
+    settings_desc_conversation_outline: '現在の会話内のユーザー質問へ移動するデスクトップ専用リストを表示します。デフォルトはオフです。',
     settings_label_hide_suggestions: '新規チャットの候補を非表示',
     settings_desc_hide_suggestions: '空の新規チャット画面に表示されるデフォルトの候補ボタン3つを非表示にして、誤タップを防ぎます。',
     settings_label_token_usage: 'トークン使用量を表示',
@@ -4203,6 +4216,9 @@ const LOCALES = {
     checkpoint_diff_title: 'チェックポイントの変更内容',
     checkpoint_diff_no_changes: 'このチェックポイントと現在のワークスペースの間に差分はありません。',
     checkpoint_diff_files_changed: (n) => `${n} 件のファイルが変更されました`,
+    outline_title: 'アウトライン',
+    outline_empty: 'まだ質問はありません。',
+    outline_loading: '読み込み中…',
   },
 
   ru: {
@@ -4345,8 +4361,8 @@ const LOCALES = {
     session_jump_end_label: 'Перейти к концу сессии',
     session_new_message: 'Новое сообщение',
     session_new_message_label: 'Новое сообщение доступно, перейти к концу',
-    jump_to_question: 'к вопросу',
-    jump_to_question_label: 'Перейти к вопросу для этого ответа',
+    jump_to_question: 'к ответу',
+    jump_to_question_label: 'Перейти к началу этого ответа',
     queued_label: 'Отправить после ответа',
     queued_count: (n) => n === 1 ? '1 в очереди' : `${n} в очереди`,
     queued_cancel: 'Отменить сообщение',
@@ -4618,6 +4634,8 @@ const LOCALES = {
     settings_label_language: 'Язык',
     settings_label_quota_chip: 'Показывать чип квоты провайдера в композиторе',
     settings_desc_quota_chip: 'Отображает фоновый индикатор остатка квоты (например, баланс кредитов OpenRouter) в подвале композитора. По умолчанию отключено. Виден только на широких экранах (≥1400px) при включении, чтобы не загромождать композитор на ноутбуках и стандартных мониторах.',
+    settings_label_conversation_outline: 'Показывать структуру беседы',
+    settings_desc_conversation_outline: 'Показывает на рабочем столе список переходов к вопросам пользователя в текущей беседе. По умолчанию отключено.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Показывать использование токенов',
@@ -5541,6 +5559,9 @@ const LOCALES = {
     settings_desc_api_redact: 'Self-hosted users can disable for transparency (not recommended for shared instances).',  // TODO: translate
     settings_label_api_redact: 'Redact sensitive data in API responses',  // TODO: translate
     subagent_children: 'Subagent sessions',  // TODO: translate
+    outline_title: 'Outline',  // TODO: translate
+    outline_empty: 'No questions yet.',  // TODO: translate
+    outline_loading: 'Loading…',  // TODO: translate
   },
 
   es: {
@@ -5686,8 +5707,8 @@ const LOCALES = {
     session_jump_end_label: 'Saltar al final de la sesión',
     session_new_message: 'Mensaje nuevo',
     session_new_message_label: 'Mensaje nuevo disponible, saltar al final',
-    jump_to_question: 'a la pregunta',
-    jump_to_question_label: 'Saltar a la pregunta de esta respuesta',
+    jump_to_question: 'a la respuesta',
+    jump_to_question_label: 'Saltar al inicio de esta respuesta',
     queued_label: 'Enviar después de la respuesta',
     queued_count: (n) => n === 1 ? '1 en cola' : `${n} en cola`,
     queued_cancel: 'Cancelar mensaje en cola',
@@ -5941,6 +5962,8 @@ const LOCALES = {
     settings_label_language: 'Idioma',
     settings_label_quota_chip: 'Mostrar el chip de cuota del proveedor en el compositor',
     settings_desc_quota_chip: 'Muestra un indicador ambiental de cuota restante (por ejemplo, saldo de crédito de OpenRouter) en el pie del compositor. Predeterminado: desactivado. Solo visible en pantallas anchas (≥1400px) cuando se activa, para mantener el compositor despejado en portátiles y monitores estándar.',
+    settings_label_conversation_outline: 'Mostrar esquema de conversación',
+    settings_desc_conversation_outline: 'Muestra una lista de salto solo en escritorio para las preguntas del usuario en la conversación actual. Desactivado de forma predeterminada.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Mostrar uso de tokens',
@@ -6873,6 +6896,9 @@ const LOCALES = {
     voice_mode_toggle: 'Voice mode',  // TODO: translate
     voice_mode_toggle_active: 'Exit voice mode',  // TODO: translate
     subagent_children: 'Subagent sessions',  // TODO: translate
+    outline_title: 'Esquema',
+    outline_empty: 'Aún no hay preguntas.',
+    outline_loading: 'Cargando…',
   },
 
   de: {
@@ -7018,8 +7044,8 @@ const LOCALES = {
     session_jump_end_label: 'Zum Ende der Sitzung springen',
     session_new_message: 'Neue Nachricht',
     session_new_message_label: 'Neue Nachricht verfügbar, zum Ende springen',
-    jump_to_question: 'zur Frage',
-    jump_to_question_label: 'Zur Frage dieser Antwort springen',
+    jump_to_question: 'zur Antwort',
+    jump_to_question_label: 'Zum Anfang dieser Antwort springen',
     queued_label: 'Wird nach Antwort gesendet',
     queued_count: (n) => n === 1 ? '1 in Warteschlange' : `${n} in Warteschlange`,
     queued_cancel: 'Nachricht abbrechen',
@@ -7258,6 +7284,8 @@ const LOCALES = {
     settings_label_language: 'Sprache',
     settings_label_quota_chip: 'Anbieter-Kontingent-Chip im Editor anzeigen',
     settings_desc_quota_chip: 'Zeigt einen Hintergrund-Indikator des verbleibenden Kontingents (z. B. OpenRouter-Guthaben) in der Editor-Fußzeile an. Standardmäßig deaktiviert. Bei Aktivierung nur auf breiten Bildschirmen (≥1400px) sichtbar, damit der Editor auf Laptops und Standard-Desktops übersichtlich bleibt.',
+    settings_label_conversation_outline: 'Konversationsgliederung anzeigen',
+    settings_desc_conversation_outline: 'Zeigt eine Desktop-Sprungliste für Benutzerfragen in der aktuellen Konversation. Standardmäßig deaktiviert.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Token-Verbrauch anzeigen',
@@ -8209,6 +8237,9 @@ const LOCALES = {
     voice_mode_toggle: 'Voice mode',  // TODO: translate
     voice_mode_toggle_active: 'Exit voice mode',  // TODO: translate
     subagent_children: 'Subagent sessions',  // TODO: translate
+    outline_title: 'Gliederung',
+    outline_empty: 'Noch keine Fragen.',
+    outline_loading: 'Laden…',
   },
 
   zh: {
@@ -8354,8 +8385,8 @@ const LOCALES = {
     session_jump_end_label: '跳转到会话结尾',
     session_new_message: '新消息',
     session_new_message_label: '有新消息，跳转到结尾',
-    jump_to_question: '回到问题',
-    jump_to_question_label: '跳转到这条回答对应的问题',
+    jump_to_question: '回到回答',
+    jump_to_question_label: '跳转到这条回答的开头',
     queued_label: '响应后发送',
     queued_count: (n) => n === 1 ? '1 条排队' : `${n} 条排队`,
     queued_cancel: '取消排队消息',
@@ -8628,6 +8659,8 @@ const LOCALES = {
     settings_label_language: '语言',
     settings_label_quota_chip: '在编辑器中显示供应商配额标签',
     settings_desc_quota_chip: '在编辑器底部显示剩余配额指示器（如 OpenRouter 信用余额）。默认关闭。启用时仅在宽屏（≥1400px）显示，以保持笔记本和标准桌面屏幕上编辑器的整洁。',
+    settings_label_conversation_outline: '显示会话大纲',
+    settings_desc_conversation_outline: '显示仅限桌面的跳转列表，用于跳转到当前会话中的用户问题。默认关闭。',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: '显示 token 用量',
@@ -9538,6 +9571,9 @@ const LOCALES = {
     voice_mode_toggle: '语音模式',
     voice_mode_toggle_active: '退出语音模式',
     subagent_children: '子代理会话',
+    outline_title: '大纲',
+    outline_empty: '暂无问题。',
+    outline_loading: '加载中…',
   },
 
   // Traditional Chinese (zh-Hant)
@@ -9709,8 +9745,8 @@ const LOCALES = {
     session_jump_end_label: '跳至對話結尾',
     session_new_message: '新訊息',
     session_new_message_label: '有新訊息，跳至結尾',
-    jump_to_question: '回到問題',
-    jump_to_question_label: '跳至這則回答對應的問題',
+    jump_to_question: '回到回答',
+    jump_to_question_label: '跳至這則回答的開頭',
     queued_label: '回應後傳送',
     queued_count: (n) => n === 1 ? '1 已排隊' : `${n} 已排隊`,
     queued_cancel: '取消排隊訊息',
@@ -10159,6 +10195,8 @@ const LOCALES = {
     settings_label_language: '語言',
     settings_label_quota_chip: '在編輯器中顯示供應商配額標籤',
     settings_desc_quota_chip: '在編輯器底部顯示剩餘配額指示器（如 OpenRouter 點數餘額）。預設關閉。啟用時僅在寬螢幕（≥1400px）顯示，以保持筆記型電腦和標準桌面螢幕上編輯器的整潔。',
+    settings_label_conversation_outline: '顯示對話大綱',
+    settings_desc_conversation_outline: '顯示僅限桌面的跳轉清單，用於跳轉到目前對話中的使用者問題。預設關閉。',
     settings_label_hide_suggestions: '隱藏新聊天建議',
     settings_desc_hide_suggestions: '隱藏空白新聊天畫面上的三個預設建議按鈕，避免誤觸。',
     settings_label_token_usage: '顯示 token 用量',
@@ -10935,6 +10973,9 @@ const LOCALES = {
     checkpoint_diff_title: '檢查點中的變更',
     checkpoint_diff_no_changes: '這個檢查點與目前工作區沒有差異。',
     checkpoint_diff_files_changed: (n) => `已變更 ${n} 個檔案`,
+    outline_title: '大綱',
+    outline_empty: '尚無問題。',
+    outline_loading: '載入中…',
 
   },
 
@@ -11015,8 +11056,8 @@ const LOCALES = {
     session_jump_end_label: 'Ir para o fim da sessão',
     session_new_message: 'Nova mensagem',
     session_new_message_label: 'Nova mensagem disponível, ir para o fim',
-    jump_to_question: 'para a pergunta',
-    jump_to_question_label: 'Ir para a pergunta desta resposta',
+    jump_to_question: 'para a resposta',
+    jump_to_question_label: 'Ir para o início desta resposta',
     queued_label: 'Envia após a resposta',
     queued_count: (n) => n === 1 ? '1 na fila' : `${n} na fila`,
     queued_cancel: 'Cancelar mensagem na fila',
@@ -11445,6 +11486,8 @@ const LOCALES = {
     settings_label_language: 'Idioma',
     settings_label_quota_chip: 'Mostrar o chip de cota do provedor no compositor',
     settings_desc_quota_chip: 'Exibe um indicador ambiente de cota restante (por exemplo, saldo de crédito do OpenRouter) no rodapé do compositor. Desativado por padrão. Visível apenas em telas largas (≥1400px) quando ativado, para manter o compositor livre em laptops e monitores padrão.',
+    settings_label_conversation_outline: 'Mostrar estrutura da conversa',
+    settings_desc_conversation_outline: 'Mostra uma lista de atalhos somente no desktop para as perguntas do usuário na conversa atual. Desativado por padrão.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Mostrar uso de tokens',
@@ -12149,6 +12192,9 @@ const LOCALES = {
     sign_out_failed: 'Falha ao sair: ',
     auth_disabled: 'Autenticação desativada — proteção por senha removida',
     disable_auth_confirm_title: 'Desativar proteção por senha',
+    outline_title: 'Esboço',
+    outline_empty: 'Ainda não há perguntas.',
+    outline_loading: 'Carregando…',
   },
   ko: {
     offline_title: '연결이 끊겼습니다',
@@ -12293,8 +12339,8 @@ const LOCALES = {
     session_jump_end_label: '세션 끝으로 이동',
     session_new_message: '새 메시지',
     session_new_message_label: '새 메시지가 있습니다, 끝으로 이동',
-    jump_to_question: '질문으로',
-    jump_to_question_label: '이 응답의 질문으로 이동',
+    jump_to_question: '응답으로',
+    jump_to_question_label: '이 응답의 시작으로 이동',
     queued_label: 'Sends after response',
     queued_count: (n) => n === 1 ? '1 queued' : `${n} queued`,
     queued_cancel: 'Cancel queued message',
@@ -12742,6 +12788,8 @@ const LOCALES = {
     settings_label_language: '언어',
     settings_label_quota_chip: '작성기에 공급자 할당량 칩 표시',
     settings_desc_quota_chip: '작성기 푸터에 남은 할당량 표시기(예: OpenRouter 크레딧 잔액)를 표시합니다. 기본값은 끔. 활성화 시 노트북과 표준 데스크톱에서 작성기가 복잡해지지 않도록 와이드 디스플레이(≥1400px)에서만 표시됩니다.',
+    settings_label_conversation_outline: '대화 개요 표시',
+    settings_desc_conversation_outline: '현재 대화의 사용자 질문으로 이동하는 데스크톱 전용 목록을 표시합니다. 기본값은 꺼짐입니다.',
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: '토큰 사용량 표시',
@@ -13534,6 +13582,9 @@ const LOCALES = {
     voice_mode_toggle: 'Voice mode',  // TODO: translate
     voice_mode_toggle_active: 'Exit voice mode',  // TODO: translate
     subagent_children: 'Subagent sessions',  // TODO: translate
+    outline_title: '개요',
+    outline_empty: '아직 질문이 없습니다.',
+    outline_loading: '로딩 중…',
   },
 
   fr: {
@@ -13695,8 +13746,8 @@ const LOCALES = {
     session_jump_end_label: 'Aller à la fin de la session',
     session_new_message: 'Nouveau message',
     session_new_message_label: 'Nouveau message disponible, aller à la fin',
-    jump_to_question: 'à la question',
-    jump_to_question_label: 'Aller à la question de cette réponse',
+    jump_to_question: 'à la réponse',
+    jump_to_question_label: 'Aller au début de cette réponse',
     queued_label: 'Envoie après réponse',
     queued_cancel: 'Annuler le message en file d\'attente',
     model_unavailable: '(indisponible)',
@@ -14056,6 +14107,8 @@ const LOCALES = {
     settings_label_language: 'Langue',
     settings_label_quota_chip: 'Afficher la pastille de quota du fournisseur dans le compositeur',
     settings_desc_quota_chip: "Affiche un indicateur ambiant de quota restant (par ex. solde de crédit OpenRouter) dans le pied du compositeur. Désactivé par défaut. Visible uniquement sur les écrans larges (≥1400px) lorsqu'activé, pour garder le compositeur dégagé sur les ordinateurs portables et les bureaux standard.",
+    settings_label_conversation_outline: 'Afficher le plan de conversation',
+    settings_desc_conversation_outline: "Affiche une liste de saut réservée au bureau pour les questions utilisateur de la conversation actuelle. Désactivé par défaut.",
     settings_label_hide_suggestions: 'Hide new-chat suggestions',
     settings_desc_hide_suggestions: 'Hide the three default suggestion buttons on the empty new-chat screen to avoid accidental taps.',
     settings_label_token_usage: 'Afficher l\'utilisation du jeton',
@@ -14860,6 +14913,9 @@ const LOCALES = {
     usage_total: 'Total de tokens',
     usage_unknown: 'inconnu',
     workspace_auto_create_folder: 'Créer le dossier s\'il n\'existe pas',
+    outline_title: 'Plan',
+    outline_empty: 'Pas encore de questions.',
+    outline_loading: 'Chargement…',
   },
 
   tr: {
@@ -15024,8 +15080,8 @@ const LOCALES = {
     session_jump_end_label: 'Oturumun sonuna atla',
     session_new_message: 'Yeni mesaj',
     session_new_message_label: 'Yeni mesaj mevcut, sona atla',
-    jump_to_question: 'sorgulamak',
-    jump_to_question_label: 'Bu yanıt için soruya geçin',
+    jump_to_question: 'yanıta',
+    jump_to_question_label: 'Bu yanıtın başına git',
     queued_label: 'Yanıttan sonra gönderilir',
     queued_count: (n) => n === 1 ? '1 queued' : `${n} queued`,
     queued_cancel: 'Sıraya alınmış mesajı iptal et',
@@ -15471,6 +15527,8 @@ const LOCALES = {
     settings_label_language: 'Dil',
     settings_label_quota_chip: 'Bestecide sağlayıcı kota çipini göster',
     settings_desc_quota_chip: 'Besteci altbilgisinde bir ortam kalan kota göstergesini (örn. OpenRouter kredi bakiyesi) görüntüler. Varsayılan kapalı. Besteciyi dizüstü bilgisayar ve standart masaüstü genişliklerinde düzenli tutmak için yalnızca etkinleştirildiğinde geniş ekranlarda (≥1400 piksel) görünür.',
+    settings_label_conversation_outline: 'Konuşma ana hattını göster',
+    settings_desc_conversation_outline: 'Geçerli konuşmadaki kullanıcı soruları için yalnızca masaüstünde görünen bir atlama listesi gösterir. Varsayılan kapalıdır.',
     settings_label_hide_suggestions: 'Yeni sohbet önerilerini gizle',
     settings_desc_hide_suggestions: 'Yanlışlıkla dokunmayı önlemek için boş yeni sohbet ekranındaki üç varsayılan öneri düğmesini gizleyin.',
     settings_label_token_usage: 'Jeton kullanımını göster',
@@ -16249,6 +16307,9 @@ const LOCALES = {
     settings_desc_api_redact: 'Kendi sunucunuzda şeffaflık için devre dışı bırakılabilir (paylaşımlı örneklerde önerilmez).',
     settings_label_api_redact: 'API yanıtlarında hassas verileri gizle',
     subagent_children: 'Alt agent oturumları',
+    outline_title: 'Ana Hat',
+    outline_empty: 'Henüz soru yok.',
+    outline_loading: 'Yükleniyor…',
   
   
   
@@ -16421,8 +16482,8 @@ const LOCALES = {
     session_jump_end_label: 'Przejdź do końca sesji',
     session_new_message: 'Nowa wiadomość',
     session_new_message_label: 'Dostępna nowa wiadomość, przejdź do końca',
-    jump_to_question: 'do pytania',
-    jump_to_question_label: 'Przejdź do pytania dotyczącego tej odpowiedzi',
+    jump_to_question: 'do odpowiedzi',
+    jump_to_question_label: 'Przejdź do początku tej odpowiedzi',
     queued_label: 'Zostanie wysłane po odpowiedzi',
     queued_count: (n) => n === 1 ? '1 w kolejce' : `${n} w kolejce`,
     queued_cancel: 'Anuluj wiadomości w kolejce',
@@ -16878,6 +16939,8 @@ const LOCALES = {
     settings_label_language: 'Język',
     settings_label_quota_chip: 'Pokaż wskaźnik limitu dostawcy w polu wprowadzania',
     settings_desc_quota_chip: 'Wyświetla subtelny wskaźnik pozostałego limitu (np. saldo kredytów OpenRouter) w stopce pola wprowadzania. Domyślnie wyłączone. Widoczne tylko na szerokich ekranach (≥1400px), aby utrzymać pole wprowadzania czytelnym na laptopach i standardowych monitorach.',
+    settings_label_conversation_outline: 'Pokaż zarys konwersacji',
+    settings_desc_conversation_outline: 'Pokazuje desktopową listę skrótów do pytań użytkownika w bieżącej konwersacji. Domyślnie wyłączone.',
     settings_label_hide_suggestions: 'Ukryj sugestie nowej konwersacji',
     settings_desc_hide_suggestions: 'Ukryj trzy domyślne przyciski sugestii na pustym ekranie nowej konwersacji, aby zapobiec przypadkowym kliknięciom.',
     settings_label_token_usage: 'Pokaż zużycie tokenów',
@@ -17154,6 +17217,9 @@ const LOCALES = {
     settings_desc_token_usage: 'Wyświetla liczbę tokenów wejściowych/wyjściowych pod każdą odpowiedzią asystenta. Można też przełączyć za pomocą /usage.',
     settings_label_api_redact: 'Ukrywaj poufne dane w odpowiedziach API',
     settings_desc_api_redact: 'Użytkownicy korzystający z hostingu własnego mogą wyłączyć to dla przejrzystości (niezalecane dla współdzielonych instancji).',
+    outline_title: 'Zarys',
+    outline_empty: 'Nie ma jeszcze pytań.',
+    outline_loading: 'Ładowanie…',
     settings_sidebar_density_compact: 'Kompaktowa',
     settings_sidebar_density_detailed: 'Szczegółowa',
     settings_desc_sidebar_density: 'Kontroluje, ile metadanych wyświetla lista sesji na lewym pasku bocznym.',

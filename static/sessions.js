@@ -454,6 +454,63 @@ function _inflightHasVisibleLiveState(inflight) {
   return false;
 }
 
+function _serverLiveSnapshotToolId(tc){
+  return String(tc&&(tc.tid||tc.id||tc.tool_call_id||tc.tool_use_id||tc.call_id||'')||'').trim();
+}
+
+function _serverLiveSnapshotInflight(snapshot, uploaded){
+  if(!snapshot||typeof snapshot!=='object') return null;
+  const rawMessages=Array.isArray(snapshot.messages)?snapshot.messages:[];
+  const messages=rawMessages
+    .filter(m=>m&&m.role)
+    .map(m=>({...m,_live:m._live!==false,_journal_snapshot:true}));
+  const rawToolCalls=Array.isArray(snapshot.tool_calls)?snapshot.tool_calls:[];
+  const toolCalls=rawToolCalls
+    .filter(tc=>tc&&tc.name)
+    .map(tc=>{
+      const next={...tc,_live:true,_journal_snapshot:true};
+      const tid=_serverLiveSnapshotToolId(next);
+      if(tid&&!next.tid) next.tid=tid;
+      return next;
+    });
+  let lastAssistantText=String(snapshot.last_assistant_text||snapshot.lastAssistantText||'');
+  let lastReasoningText=String(snapshot.last_reasoning_text||snapshot.lastReasoningText||'');
+  const lastLiveAssistant=[...messages].reverse().find(m=>m&&m.role==='assistant'&&m._live);
+  if(lastLiveAssistant){
+    if(!lastAssistantText&&typeof lastLiveAssistant.content==='string') lastAssistantText=lastLiveAssistant.content;
+    if(!lastReasoningText&&typeof lastLiveAssistant.reasoning==='string') lastReasoningText=lastLiveAssistant.reasoning;
+  }
+  if((lastAssistantText||lastReasoningText)&&!lastLiveAssistant){
+    messages.push({
+      role:'assistant',
+      content:lastAssistantText,
+      reasoning:lastReasoningText||undefined,
+      _live:true,
+      _journal_snapshot:true,
+    });
+  }
+  if(!messages.length&&!toolCalls.length&&!lastAssistantText&&!lastReasoningText) return null;
+  const replayAfterSeq=Number(snapshot.last_seq||0);
+  const activityBurstAnchors=Array.isArray(snapshot.activity_burst_anchors)
+    ? snapshot.activity_burst_anchors
+    : (Array.isArray(snapshot.activityBurstAnchors)?snapshot.activityBurstAnchors:[]);
+  return {
+    messages,
+    uploaded:Array.isArray(uploaded)?[...uploaded]:[],
+    toolCalls,
+    todos:null,
+    todoStateMeta:null,
+    reattach:true,
+    journalSnapshot:true,
+    lastAssistantText,
+    lastReasoningText,
+    lastRunJournalSeq:Number.isFinite(replayAfterSeq)?Math.max(0,replayAfterSeq):0,
+    currentActivityBurstId:Number(snapshot.current_activity_burst_id||snapshot.currentActivityBurstId||0)||0,
+    currentLiveSegmentSeq:Number(snapshot.current_live_segment_seq||snapshot.currentLiveSegmentSeq||0)||0,
+    activityBurstAnchors,
+  };
+}
+
 function _rememberRenderedSessionSnapshot(s) {
   if (!s || !s.session_id) return;
   const previous = _sessionListSnapshotById.get(s.session_id);
@@ -997,6 +1054,13 @@ async function loadSession(sid){
     // preserve, making a session switch look like the live turn vanished.
     delete INFLIGHT[sid];
     if(typeof clearInflightState==='function') clearInflightState(sid);
+  }
+
+  const serverLiveSnapshot=activeStreamId
+    ? _serverLiveSnapshotInflight(S.session.runtime_journal_snapshot, S.session.pending_attachments||[])
+    : null;
+  if(serverLiveSnapshot&&(!INFLIGHT[sid]||!_inflightHasVisibleLiveState(INFLIGHT[sid]))){
+    INFLIGHT[sid]=serverLiveSnapshot;
   }
 
   if(INFLIGHT[sid]){
@@ -6168,4 +6232,23 @@ async function _confirmDeleteProject(proj){
 // Global Escape handler for batch select mode
 document.addEventListener('keydown',(e)=>{
   if(e.key==='Escape'&&_sessionSelectMode) exitSessionSelectMode();
+});
+
+// Keyboard session navigation — J/K bindings
+function navigateSession(dir){
+  const rows=[...document.querySelectorAll('.session-item[data-sid]')];
+  const sids=rows.map(r=>r.dataset.sid);
+  const cur=S.session&&S.session.session_id;
+  const i=sids.indexOf(cur);
+  if(i<0||!sids.length)return;
+  const next=sids[Math.min(Math.max(i+dir,0),sids.length-1)];
+  if(next&&next!==cur) loadSession(next);
+}
+
+document.addEventListener('keydown',(e)=>{
+  if(e.key!=='j'&&e.key!=='k') return;
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  if(typeof _isInteractiveSwipeTarget==='function'&&_isInteractiveSwipeTarget(e.target)) return;
+  e.preventDefault();
+  navigateSession(e.key==='j'?1:-1);
 });
