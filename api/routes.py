@@ -1568,6 +1568,87 @@ def _ensure_full_session_before_mutation(sid: str, session):
     return full_session
 
 
+def _get_or_materialize_session(sid: str):
+    """Get a session, materializing from CLI/agent metadata if not in WebUI store.
+
+    Mirrors the fallback logic in /api/session/archive (routes.py:~8530).
+    Raises:
+        KeyError: session not found in any store
+        PermissionError: session is read-only (messaging/Claude Code)
+    """
+    try:
+        s = get_session(sid)
+        s = _ensure_full_session_before_mutation(sid, s)
+        # Read-only guard on the happy path too: an already-stored read-only /
+        # imported session must not be mutated via rename/update/move
+        # (Session.save() does not enforce this). Scope this to the explicit
+        # read_only flag — a stored messaging session already owns its sidecar,
+        # so the messaging-fork concern only applies to the materialize fallback
+        # below (and the heuristic record-check would mis-trip on mock sessions).
+        if getattr(s, "read_only", False):
+            raise PermissionError("read-only imported session")
+        return s
+    except KeyError:
+        pass
+
+    # Fallback: try to materialize from CLI/agent session metadata
+    cli_meta = _lookup_cli_session_metadata(sid)
+    if not cli_meta:
+        raise KeyError(sid)
+
+    # Read-only guard: messaging sessions and Claude Code imports cannot be
+    # mutated. Reject BOTH an explicit read_only flag AND any messaging-source
+    # record — agent rows normalize messaging sources without setting read_only,
+    # and state.db (not a WebUI sidecar) is the source of truth for them, so
+    # materializing a writable sidecar would fork the title/state.
+    if cli_meta.get("read_only") or _is_messaging_session_record(cli_meta):
+        raise PermissionError("read-only imported session")
+
+    # Preserve source metadata fields
+    def _apply_source_meta(s):
+        s.is_cli_session = True
+        s.source_tag = cli_meta.get("source_tag")
+        s.raw_source = cli_meta.get("raw_source") or cli_meta.get("source_tag")
+        s.session_source = cli_meta.get("session_source")
+        s.source_label = cli_meta.get("source_label")
+        s.user_id = cli_meta.get("user_id")
+        s.chat_id = cli_meta.get("chat_id")
+        s.chat_type = cli_meta.get("chat_type")
+        s.thread_id = cli_meta.get("thread_id")
+        s.session_key = cli_meta.get("session_key")
+        s.platform = cli_meta.get("platform")
+
+    if _is_messaging_session_record(cli_meta):
+        # Messaging sessions: lightweight Session with no messages (state.db is source of truth)
+        s = Session(
+            session_id=sid,
+            title=cli_meta.get("title") or title_from(get_cli_session_messages(sid), "CLI Session"),
+            workspace=get_last_workspace(),
+            model=cli_meta.get("model") or "unknown",
+            created_at=cli_meta.get("created_at"),
+            updated_at=cli_meta.get("updated_at"),
+        )
+        _apply_source_meta(s)
+        s.save(touch_updated_at=False)
+    else:
+        # Regular CLI/agent sessions: import full message history
+        msgs = get_cli_session_messages(sid)
+        if not msgs:
+            raise KeyError(sid)
+        s = import_cli_session(
+            sid,
+            cli_meta.get("title") or title_from(msgs, "CLI Session"),
+            msgs,
+            cli_meta.get("model") or "unknown",
+            profile=cli_meta.get("profile"),
+            created_at=cli_meta.get("created_at"),
+            updated_at=cli_meta.get("updated_at"),
+        )
+        _apply_source_meta(s)
+
+    return s
+
+
 def _reconcile_stale_stream_state_for_session_rows(session_rows) -> bool:
     """Clear stale persisted stream fields before /api/sessions serializes rows."""
     changed = False
@@ -3321,6 +3402,47 @@ def _merged_session_messages_for_display(session, cli_messages=None) -> list:
             return merged_messages
         return sidecar_messages if len(sidecar_messages) > len(cli_messages) else cli_messages
     return sidecar_messages
+
+
+
+def _merged_webui_lineage_messages_for_display(session, messages=None) -> list:
+    """Include immediate parent-only rows when a WebUI continuation sidecar is partial.
+
+    Compression/continuation sessions should render as one conversation. Most
+    child sidecars are cumulative, so this is usually a cheap no-op. If a child
+    sidecar accidentally omits rows that still exist in the immediate parent,
+    merge those parent-only rows into the display transcript. Explicit forks and
+    generic child-session rows remain isolated; they intentionally start from a
+    subset of their parent.
+    """
+    primary_messages = list(messages if messages is not None else (getattr(session, "messages", []) or []))
+    parent_id = str(getattr(session, "parent_session_id", "") or "").strip()
+    if not parent_id:
+        return primary_messages
+    source = str(getattr(session, "session_source", "") or "").strip().lower()
+    relationship = str(getattr(session, "relationship_type", "") or "").strip().lower()
+    if source == "fork" or relationship == "child_session":
+        return primary_messages
+    try:
+        parent = get_session(parent_id, metadata_only=False)
+    except Exception:
+        return primary_messages
+    parent_messages = list(getattr(parent, "messages", []) or [])
+    if not parent_messages:
+        return primary_messages
+    merged_messages = []
+    seen_message_keys = set()
+    for msg in sorted(list(parent_messages) + list(primary_messages), key=lambda m: (
+        float(m.get("timestamp") or 0),
+        str(m.get("role") or ""),
+        str(m.get("content") or ""),
+    )):
+        key = _session_message_merge_key(msg)
+        if key in seen_message_keys:
+            continue
+        seen_message_keys.add(key)
+        merged_messages.append(msg)
+    return merged_messages
 
 
 def _message_summary(messages) -> dict:
@@ -5848,6 +5970,7 @@ def handle_get(handler, parsed) -> bool:
                         state_db_messages,
                         truncation_watermark=getattr(s, "truncation_watermark", None),
                     )
+                _all_msgs = _merged_webui_lineage_messages_for_display(s, _all_msgs)
             else:
                 if is_messaging_session and cli_messages:
                     _all_msgs = _merged_session_messages_for_display(s, cli_messages)
@@ -7365,7 +7488,18 @@ def handle_post(handler, parsed) -> bool:
                     return j(handler, set_reasoning_display(False))
                 return bad(handler, f"display must be show|hide|on|off (got '{display}')")
             if effort is not None:
-                return j(handler, set_reasoning_effort(effort))
+                model_id = str(body.get("model") or "").strip() or None
+                provider_id = str(body.get("provider") or "").strip() or None
+                base_url = str(body.get("base_url") or "").strip() or None
+                return j(
+                    handler,
+                    set_reasoning_effort(
+                        effort,
+                        model_id=model_id,
+                        provider_id=provider_id,
+                        base_url=base_url,
+                    ),
+                )
             return bad(handler, "reasoning: must supply 'display' or 'effort'")
         except ValueError as e:
             return bad(handler, str(e))
@@ -7418,10 +7552,11 @@ def handle_post(handler, parsed) -> bool:
         except ValueError as e:
             return bad(handler, str(e))
         try:
-            s = get_session(body["session_id"])
-            s = _ensure_full_session_before_mutation(body["session_id"], s)
+            s = _get_or_materialize_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        except PermissionError:
+            return bad(handler, "Read-only imported sessions cannot be renamed from WebUI", 403)
         with _get_session_agent_lock(body["session_id"]):
             from api.session_ops import apply_session_title_rename
             apply_session_title_rename(s, body["title"])
@@ -7608,9 +7743,11 @@ def handle_post(handler, parsed) -> bool:
         except ValueError as e:
             return bad(handler, str(e))
         try:
-            s = get_session(body["session_id"])
+            s = _get_or_materialize_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        except PermissionError:
+            return bad(handler, "Read-only imported sessions cannot be updated from WebUI", 403)
         old_ws = getattr(s, "workspace", "")
         old_model = getattr(s, "model", None)
         old_provider = getattr(s, "model_provider", None)
@@ -8225,7 +8362,7 @@ def handle_post(handler, parsed) -> bool:
             from api.config import invalidate_models_cache
             invalidate_models_cache()
             return j(handler, result, extra_headers={
-                'Set-Cookie': build_profile_cookie(name),
+                'Set-Cookie': build_profile_cookie(name, handler),
             })
         except (ValueError, FileNotFoundError) as e:
             return bad(handler, _sanitize_error(e), 404)
@@ -8592,9 +8729,11 @@ def handle_post(handler, parsed) -> bool:
         except ValueError as e:
             return bad(handler, str(e))
         try:
-            s = get_session(body["session_id"])
+            s = _get_or_materialize_session(body["session_id"])
         except KeyError:
             return bad(handler, "Session not found", 404)
+        except PermissionError:
+            return bad(handler, "Read-only imported sessions cannot be moved from WebUI", 403)
         # #1614: refuse moves into a project owned by another profile.
         target_pid = body.get("project_id") or None
         if target_pid:

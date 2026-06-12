@@ -3,6 +3,69 @@
 
 ## [Unreleased]
 
+## [v0.51.369] — 2026-06-12 — Release MH (WebUI streaming honors runtime target model/base_url)
+
+### Fixed
+
+- **Provider OpenCode-Go (and similar pooled providers) no longer 404 with "model not found" when selected via the WebUI model picker (#3895).** WebUI streaming used the *configured* provider base URL instead of the runtime provider's per-model-normalized URL, which duplicated a `/v1` path segment for OpenCode-Go and produced a 404. The target model is now threaded into runtime provider resolution (including the 401 credential self-heal retries), and the runtime-normalized base URL is preferred — but only when it points at the same scheme+host+port as the configured one, so an explicit `providers.<id>.base_url` override at a different endpoint (e.g. an LM Studio LAN address or an OpenRouter mirror) is still honored. (#3895)
+
+## [v0.51.368] — 2026-06-12 — Release MG (bind active-profile cookie to auth session)
+
+### Security
+
+- **The active-profile cookie is now cryptographically bound to the auth session when auth is enabled (#803).** The `hermes_profile` cookie is client-controlled and is read by profile-scoped routes to decide which profile's data is visible. Previously, with auth enabled, a client could forge `hermes_profile=<other-profile>` to have requests treated under another profile. The cookie is now HMAC-signed over both the session token and the profile name, so it can't be forged, replayed across sessions, or altered to another profile; verification fails closed (an unsigned, tampered, or stale plain-name cookie is rejected and the request falls back to the default profile). No-auth deployments keep the legacy plain-name cookie, which was never an authorization boundary there. As a side benefit, an unauthenticated client can no longer influence the profile context that pre-login (public-path) handlers run under. (#803)
+
+## [v0.51.367] — 2026-06-12 — Release MF (autocomplete filter + lineage merge + shutdown i18n fixes)
+
+### Fixed
+
+- **CLI-only slash commands no longer clutter the WebUI autocomplete (#3969).** Commands that only work in the terminal (and skill-shortcut names that collide with them) are filtered out of the autocomplete list; if you type one anyway, you still get the WebUI-only explanation.
+- **Session-lineage display rows that were being dropped on full session loads are now merged back in.** A merge gap omitted some lineage rows from `GET /api/session`; they're now included (additive, deduped by merge key, leaving explicit forks/child rows alone).
+- **The "Stop the Hermes WebUI server" settings description renders correctly in every language (#4002).** The string embedded `<code>` HTML inside translatable text; it's now split into plain text fragments composed around statically-rendered code spans, applied across all 13 locales.
+
+## [v0.51.366] — 2026-06-12 — Release ME (assistant turn anchor source normalizer — Slice 2, inert)
+
+### Added
+
+- **Slice 2 of the Stable Assistant Turn Anchors foundation: a source-event normalizer (#3980, #3926).** Adds `normalizeAssistantTurnAnchorSourceEvent` / `normalizeAssistantTurnAnchorSourceEvents` to the frozen `HermesAssistantTurnAnchors` global, converting live SSE-style, replay/journal, and settled-message events into a single anchor-normalized shape with stable identity and dedupe keys. The helper is **inert** — no `send()` / `attachLiveStream()` / `renderMessages()` / settlement / `S.messages` / `INFLIGHT` / DOM path consumes it yet — so there is zero rendering change in this release; it lands the model that Compact Worklog and the in-progress Transparent Stream work will later consume from one normalizer. Identity reads are own-property-only and payload shaping uses `Object.create(null)` with unsafe-key skipping, so prototype-pollution and inherited-identity payloads can't leak through. (#3980)
+
+## [v0.51.365] — 2026-06-11 — Release MD (lineage-segment open + reasoning chip fixes)
+
+### Fixed
+
+- **Clicking an expanded session-lineage segment now opens that exact session instead of resolving back to the collapsed parent (#4003).** The explicit lineage-segment and child-row click handlers now skip the collapsed-id lineage resolution (which is only meant for stale collapsed rows), so the session you click is the session that loads.
+- **The reasoning-effort chip no longer disappears after you pick an effort (#3958).** Selecting an effort posted to `/api/reasoning`, which re-resolved the supported efforts for the config-default model rather than the active session's model — so a session whose model differs from the default lost its chip until a refresh. The effort POST now carries the active session's model/provider context, matching the GET path, so the chip stays correct. (#3958)
+
+## [v0.51.364] — 2026-06-11 — Release MC (self-heal stuck session loads)
+
+### Fixed
+
+- **A failed session load no longer wedges the WebUI so that no chat can be opened (#3993).** When a session load failed with a non-404 error (400/403/500/network) during boot, the stale session id stayed in `localStorage` and the URL, so every refresh retried the same dead session and the transcript pane stayed stuck. Boot-time load failures now self-heal by clearing the stale id (mirroring the existing 404 self-heal). The clear is strictly scoped: it only runs when no session is on screen (a boot restore), never when you're already viewing a healthy session (the error may be transient), and a stale in-flight load that's been superseded by a newer session selection bails before touching anything — so it can't wipe the session you just navigated to.
+
+## [v0.51.363] — 2026-06-11 — Release MB (rename/move/update CLI sessions without 404)
+
+### Fixed
+
+- **Renaming, moving, or updating a CLI/agent session that isn't yet in the WebUI store no longer 404s (#3985).** These actions previously only looked in the WebUI session store, so a session originating from the TUI/CLI/agent (not yet materialized into the store) couldn't be renamed/moved/updated. They now fall back to materializing the session from its CLI metadata (mirroring the existing `/api/session/archive` behavior). Read-only imported sessions (messaging channels, Claude Code) remain protected: they're refused with 403 on both the already-stored and the materialize paths, and a state.db-owned messaging session is never materialized into a writable WebUI sidecar. (#3985)
+
+## [v0.51.362] — 2026-06-11 — Release MA (malformed providers config no longer crashes)
+
+### Fixed
+
+- **A malformed `providers` config no longer crashes provider/model resolution (#3979).** If `providers` in `config.yaml` was set to a truthy non-dict value (e.g. a list), several resolution paths called `.get(...)` on it and raised `AttributeError`. Provider config is now read through isinstance-guarded helpers that treat a malformed value as unconfigured (empty), so resolution degrades gracefully instead of crashing. Valid dict-shaped configs are unaffected. (#3979)
+
+## [v0.51.361] — 2026-06-11 — Release LZ (configurable session cookie name)
+
+### Added
+
+- **The auth session cookie name is now configurable via `HERMES_WEBUI_COOKIE_NAME`.** Browsers scope cookies by host, not host+port (RFC 6265), so two WebUI instances on the same hostname but different ports previously trampled each other's `hermes_session` cookie. Set `HERMES_WEBUI_COOKIE_NAME` to give each instance a distinct cookie name. The value is validated as an RFC 6265 token (falling back to the default `hermes_session` when unset, empty, or invalid), and existing deployments are unaffected. (#3981)
+
+## [v0.51.360] — 2026-06-11 — Release LY (close idle SSE on hidden tabs)
+
+### Fixed
+
+- **Idle background tabs no longer exhaust the browser's connection pool and cause "Request timed out" toasts (#3992).** Each WebUI window opened three persistent SSE connections (session-events, gateway stream, per-session stream); with two windows open that reached the browser's six-connection per-origin HTTP/1.1 limit, so any subsequent request queued behind the saturated pool and timed out. The gateway and per-session streams now follow the same Page Visibility pattern the session-events stream already used: they close while the tab is hidden (freeing pool slots) and reopen when it becomes visible again. The per-session stream correctly reattaches on re-show — including for a session that was loaded or restored while the tab was already hidden — so live `bg_task_complete` / `server_turn_started` events are not missed. (#3996)
+
 ## [v0.51.359] — 2026-06-11 — Release LW (assistant turn anchor phase 0 scaffold)
 
 ### Added
