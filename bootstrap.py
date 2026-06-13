@@ -74,7 +74,7 @@ def _load_repo_dotenv() -> None:
 _load_repo_dotenv()
 
 DEFAULT_HOST = os.getenv("HERMES_WEBUI_HOST", "127.0.0.1")
-DEFAULT_PORT = int(os.getenv("HERMES_WEBUI_PORT", "8787"))
+DEFAULT_PORT = int(os.getenv("HERMES_WEBUI_PORT", "8788"))
 # Set HERMES_WEBUI_SKIP_ONBOARDING=1 to bypass the first-run wizard when
 # the environment is already fully configured (e.g. managed hosting).
 

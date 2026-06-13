@@ -23,7 +23,7 @@
 
 .PARAMETER Port
     TCP port the WebUI binds to. Overrides HERMES_WEBUI_PORT env.
-    Default: 8787.
+    Default: 8788.
 
 .PARAMETER BindHost
     Bind address. Overrides HERMES_WEBUI_HOST env.
@@ -31,7 +31,7 @@
 
 .EXAMPLE
     .\start.ps1
-    # Bind to 127.0.0.1:8787, foreground.
+    # Bind to 127.0.0.1:8788, foreground.
 
 .EXAMPLE
     .\start.ps1 -Port 9000
@@ -146,7 +146,7 @@ $PortFinal = if ($Port) {
     # expansion, etc.) — surface a targeted error message instead.
     $parsedPort = 0
     if (-not [int]::TryParse($env:HERMES_WEBUI_PORT, [ref]$parsedPort)) {
-        Write-Error "HERMES_WEBUI_PORT='$($env:HERMES_WEBUI_PORT)' is not a valid integer port. Unset the variable to use the default (8787), or set it to a number 1-65535."
+        Write-Error "HERMES_WEBUI_PORT='$($env:HERMES_WEBUI_PORT)' is not a valid integer port. Unset the variable to use the default (8788), or set it to a number 1-65535."
         exit 1
     }
     if ($parsedPort -lt 1 -or $parsedPort -gt 65535) {
@@ -155,7 +155,7 @@ $PortFinal = if ($Port) {
     }
     $parsedPort
 } else {
-    8787
+    8788
 }
 $env:HERMES_WEBUI_HOST = $BindHostFinal
 $env:HERMES_WEBUI_PORT = "$PortFinal"
