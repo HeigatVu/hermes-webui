@@ -3,6 +3,48 @@
 
 ## [Unreleased]
 
+## [v0.51.394] — 2026-06-13 — Release NG (document-title attention badge for pending prompts, #4121)
+
+### Added
+
+- **Desktop/PWA wrappers can now detect approval/clarify attention from the document title without stealing chat-title ownership (#4121).** An active chat tab prepends a `● ` marker only while the current session has a pending approval or clarification prompt; the badge clears on prompt dismissal or session switch. It composes on top of the #4086 title-owner model — `syncTopbar()` still owns the underlying `"<session> — <assistant>"` format and the badge is layered in front of it. (#4121)
+
+## [v0.51.393] — 2026-06-13 — Release NF (run /yolo immediately while the agent is busy)
+
+### Fixed
+
+- **`/yolo` now takes effect immediately when sent during a running turn, instead of being queued behind it.** The busy-send fast path already ran `/steer`, `/interrupt`, `/queue`, `/terminal`, and `/goal` immediately; `/yolo` (session-scoped approval bypass) is now in that allowlist too, so toggling YOLO mid-turn applies to the in-flight approvals rather than only the next turn. (#467 follow-up)
+
+## [v0.51.392] — 2026-06-13 — Release NE (align WebUI reasoning efforts to the agent's accepted set, drop "max")
+
+### Fixed
+
+- **The WebUI no longer offers a "Max" reasoning effort the agent never accepted.** `VALID_REASONING_EFFORTS` is now `minimal/low/medium/high/xhigh` — matching `hermes-agent`'s own `VALID_REASONING_EFFORTS` (which has no `max`) — and the reasoning picker, `/reasoning` slash-command args, and help text drop the stale `Max` option. A previously-saved `reasoning_effort: max` is migrated to `xhigh` at resolve time (instead of becoming parser-invalid and silently dropping reasoning), so existing configs keep working. This is the "only expose what the model/agent actually supports" cleanup. (#3505 review follow-up)
+
+## [v0.51.391] — 2026-06-13 — Release ND (Stable Assistant Turn Anchors renderer snapshot adapter, inert, #3926)
+
+### Added
+
+- **Stable Assistant Turn Anchors renderer snapshot adapter (#3926).** Adds `createAssistantTurnAnchorRendererSnapshot()` and `reconcileAssistantTurnAnchorRendererSnapshot()` so current Compact Worklog / Transparent Stream row hooks can be summarized as `renderer_snapshot_v1` and compared with the anchor-owned `activity_scene_v1` through the Slice 7 dual-run reconciler. Still an inert migration harness: no current `renderMessages()`, live SSE, `S.messages`, `INFLIGHT`, Compact Worklog, Transparent Stream, or DOM path invokes it automatically. (Slice 8 of the live-to-final unification; absorbs the #4120 reconciler review feedback.)
+
+## [v0.51.390] — 2026-06-13 — Release NC (don't snap long final answers to bottom on PWA refresh, #4123)
+
+### Fixed
+
+- **Long final answers no longer snap back to the bottom while you are reading them in PWA/mobile mode (#4123).** Same-session background refreshes now treat a preserved scroll snapshot whose viewport is clearly away from the bottom (>250px) as an active reading position and restore it before any follow-to-bottom path runs, re-mark restored mid-answer positions as unpinned so later refreshes keep respecting the reader, and no longer reset the scroll-direction tracker on same-session force refreshes (that reset stays scoped to real session switches). (#4123)
+
+## [v0.51.389] — 2026-06-13 — Release NB (surface dirty-install state in update check, #4085)
+
+### Fixed
+
+- **A dirty install no longer reports "Up to date" with no way to recover (#4085).** The update-check payload now carries a `dirty: bool` reflecting the working-tree state vs HEAD, so the Settings update panel can surface a "Local changes detected" state with an apply-latest action (wired to the existing destructive-reset endpoint) when the install is dirty and at-or-past the latest release tag. (#4085)
+
+## [v0.51.388] — 2026-06-13 — Release NA (Stable Assistant Turn Anchors dual-run reconciler, inert, #3926)
+
+### Added
+
+- **Stable Assistant Turn Anchors dual-run reconciler (#3926).** Adds `reconcileAssistantTurnAnchorActivityScene()` to compare an anchor-owned `activity_scene_v1` projection against current renderer-row snapshots before visible renderer replacement. The helper reports row-count, missing/extra row, order, and field mismatch diagnostics for Compact Worklog / Transparent Stream shadow runs while staying inert: no current `renderMessages()`, live SSE, `S.messages`, `INFLIGHT`, Compact Worklog, Transparent Stream, or DOM path consumes it yet. (Slice 7 of the live-to-final unification.)
+
 ## [v0.51.387] — 2026-06-13 — Release MZ (Stable Assistant Turn Anchors live shadow feed, inert, #3926)
 
 ### Added

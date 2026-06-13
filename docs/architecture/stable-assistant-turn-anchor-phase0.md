@@ -29,11 +29,18 @@ streaming or rendering yet.
 - Slice 6 starts the live shadow-feed boundary: `attachLiveStream()` now creates
   a per-stream anchor registry and feeds non-token live activity events into it
   without changing either current renderer.
-- The next independently reviewable boundary is a dual-run reconciler that
-  compares current Compact Worklog / Transparent Stream output with the
-  anchor-owned activity scene before visible renderer replacement. `S.messages`,
-  `INFLIGHT`, stream-local state, and DOM nodes remain projection/cache layers
-  outside the settled final-prose path and the live shadow registry.
+- Slice 7 adds the dual-run reconciler for the renderer handoff: it compares a
+  current Compact Worklog / Transparent Stream renderer-row snapshot with the
+  anchor-owned `activity_scene_v1` rows and reports missing rows, extra rows,
+  order changes, and field mismatches before visible renderer replacement.
+  `S.messages`, `INFLIGHT`, stream-local state, and DOM nodes remain
+  projection/cache layers outside the settled final-prose path and the live
+  shadow registry.
+- Slice 8 adds the renderer snapshot adapter that can extract
+  `renderer_snapshot_v1` summaries from current Compact Worklog /
+  Transparent Stream row hooks and feed them through the reconciler to produce a
+  concrete matched / mismatched answer. The adapter remains opt-in and is not
+  invoked by `renderMessages()` or the live SSE hot path.
 
 ## State Layers
 
@@ -195,6 +202,53 @@ EventSource network `error` remains a transport/recovery signal and is not fed
 as an anchor terminal event in this slice. Runtime app errors continue through
 the existing `apperror` event path and are fed as terminal activity only when
 they match the current session.
+
+## Slice 7 Dual-Run Reconciler
+
+`HermesAssistantTurnAnchors.reconcileAssistantTurnAnchorActivityScene()` compares
+the anchor-owned `activity_scene_v1` projection against a renderer-derived row
+snapshot. It is a shadow harness, not a renderer. Callers pass the current
+renderer's observed rows as plain summaries, and the helper returns
+`activity_scene_reconciliation_v1` with:
+
+- expected and actual row summaries,
+- the comparison fields used,
+- row-count, missing-row, unexpected-row, order, and field mismatch diagnostics,
+- identity and terminal-state context from the anchor scene.
+
+This slice keeps the comparison renderer-neutral. Compact Worklog and
+Transparent Stream can each provide their own row snapshots, while the expected
+side always comes from the same anchor scene. Matching rows prove the current
+renderer can be replaced by an anchor-backed renderer for that event shape;
+mismatches identify the specific event kind, tool identity, status, or ordering
+gap that must be fixed before the visible handoff.
+
+No current hot path consumes the reconciler. `renderMessages()`, live SSE
+callbacks, `S.messages`, `INFLIGHT`, Compact Worklog, Transparent Stream, and
+DOM continuity continue to render exactly as before until a later replacement
+slice deliberately switches a renderer to anchor-owned rows.
+
+## Slice 8 Renderer Snapshot Adapter
+
+`HermesAssistantTurnAnchors.createAssistantTurnAnchorRendererSnapshot()` turns
+current renderer rows into `renderer_snapshot_v1` summaries. The helper accepts
+plain row-like objects or a DOM/root object with the existing renderer hooks:
+Transparent Stream rows (`.transparent-event-row` /
+`data-transparent-event-row`), Compact Worklog reasoning rows (`.wl-reason`,
+`.agent-activity-thinking`, `.thinking-card-row`), and Compact Worklog tool rows
+(`.tool-card-row`).
+
+`HermesAssistantTurnAnchors.reconcileAssistantTurnAnchorRendererSnapshot()` is
+the first one-call yes/no harness: it builds or accepts a renderer snapshot,
+passes its rows into `reconcileAssistantTurnAnchorActivityScene()`, and returns
+`renderer_snapshot_reconciliation_v1` with `matched: true` or `matched: false`
+plus the underlying mismatch diagnostics.
+
+This slice still does not change visible rendering. It gives later work a
+bounded way to ask whether the current renderer output is equivalent to the
+anchor-owned activity scene. A `matched: false` result is expected while current
+renderers intentionally collapse or omit events, such as representing a tool
+start + tool completion as one visible row or omitting terminal status rows.
 
 ## Source Event Classification
 
