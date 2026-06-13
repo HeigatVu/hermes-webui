@@ -2,7 +2,7 @@
 Sprint 1 test suite for the Hermes Web UI.
 
 Tests use the ISOLATED test server. Port is auto-derived per worktree (see conftest.py).
-Production server (port 8787) and your real conversations are never touched.
+Production server (port 8788) and your real conversations are never touched.
 Start the server before running:
     <repo>/start.sh
     # wait 2 seconds

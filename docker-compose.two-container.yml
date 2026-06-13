@@ -2,7 +2,7 @@
 #
 # QUICK START:
 #   docker compose -f docker-compose.two-container.yml up -d
-#   Open http://localhost:8787
+#   Open http://localhost:8788
 #
 # This runs the agent and web UI in separate containers connected via shared
 # Docker volumes. The WebUI installs the agent's Python dependencies from the
@@ -86,7 +86,7 @@ services:
     depends_on:
       - hermes-agent
     ports:
-      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
     volumes:
       # Same hermes home as the agent — shares config, sessions, state
       - hermes-home:/home/hermeswebui/.hermes
@@ -103,7 +103,7 @@ services:
       - ${HERMES_WORKSPACE:-${HOME}/workspace}:/workspace
     environment:
       - HERMES_WEBUI_HOST=0.0.0.0
-      - HERMES_WEBUI_PORT=8787
+      - HERMES_WEBUI_PORT=8788
       - HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui
       # Let the WebUI health/status checks reach the gateway container over
       # the compose network. Cron listing is local, but scheduled ticking and

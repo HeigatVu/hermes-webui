@@ -902,7 +902,7 @@ class TestApiWireFormat:
 
         Locks the maintainer-suggested env-var contract from #1895 review:
         the MCP must track the same env vars api/config.py:32-33 reads, so
-        a non-default WebUI port (e.g. 8788 when 8787 is held by another
+        a non-default WebUI port (e.g. 8789 when 8788 is held by another
         service on the host) does not require a code edit."""
         os.environ["HERMES_WEBUI_HOST"] = "10.0.0.42"
         os.environ["HERMES_WEBUI_PORT"] = "9999"
@@ -916,10 +916,10 @@ class TestApiWireFormat:
             os.environ.pop("HERMES_WEBUI_PORT", None)
 
     async def test_url_default_when_env_unset(self):
-        """Default upstream port is 8787, matching api/config.py:33."""
+        """Default upstream port is 8788, matching api/config.py:33."""
         os.environ.pop("HERMES_WEBUI_HOST", None)
         os.environ.pop("HERMES_WEBUI_PORT", None)
         mod, _ = _reimport_mcp()
         assert mod.WEBUI_HOST == "127.0.0.1"
-        assert mod.WEBUI_PORT == "8787"
-        assert mod.WEBUI_URL == "http://127.0.0.1:8787"
+        assert mod.WEBUI_PORT == "8788"
+        assert mod.WEBUI_URL == "http://127.0.0.1:8788"

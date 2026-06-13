@@ -97,12 +97,12 @@ RUN echo "__version__ = '${HERMES_VERSION}'" > /apptoo/api/_version.py
 
 # Default to binding all interfaces (required for container networking)
 ENV HERMES_WEBUI_HOST=0.0.0.0
-ENV HERMES_WEBUI_PORT=8787
+ENV HERMES_WEBUI_PORT=8788
 
-EXPOSE 8787
+EXPOSE 8788
 
 HEALTHCHECK --interval=30s --timeout=8s --start-period=10s --retries=3 \
-  CMD bash /apptoo/scripts/lib/health_probe.sh localhost 8787 /health 2 >/dev/null || exit 1
+  CMD bash /apptoo/scripts/lib/health_probe.sh localhost 8788 /health 2 >/dev/null || exit 1
 
 # docker_init.bash performs root-only bind-mount setup, then drops to hermeswebui
 # before starting the WebUI server. The production image does not ship sudo.

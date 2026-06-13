@@ -178,7 +178,7 @@ _find_python() {
 
 _parse_launch_binding() {
   CTL_HOST="${HERMES_WEBUI_HOST:-127.0.0.1}"
-  CTL_PORT="${HERMES_WEBUI_PORT:-8787}"
+  CTL_PORT="${HERMES_WEBUI_PORT:-8788}"
   local arg next_is_host=0 saw_port=0
   for arg in "$@"; do
     if (( next_is_host )); then
@@ -411,13 +411,13 @@ _launchd_webui_pid() {
   # allowed to start (#3291 over-block fix). When port ownership can't be
   # determined (no lsof), fall back to the conservative previous behavior of
   # only guarding the default port so non-default ports are never wrongly blocked.
-  local want_port="${CTL_PORT:-${HERMES_WEBUI_PORT:-8787}}"
+  local want_port="${CTL_PORT:-${HERMES_WEBUI_PORT:-8788}}"
   _pid_listens_on_port "${pid}" "${want_port}"
   case "$?" in
     0) printf '%s\n' "${pid}"; return 0 ;;   # launchd job listens on our port → block
     1) return 1 ;;                            # launchd job on a different port → allow
     *)                                        # unknown: only guard the default port
-      if [[ "${want_port}" == "8787" ]]; then
+      if [[ "${want_port}" == "8788" ]]; then
         printf '%s\n' "${pid}"; return 0
       fi
       return 1 ;;
@@ -536,7 +536,7 @@ status_cmd() {
   _load_hermes_dotenv
   _load_state_if_present
   local host="${HOST:-${HERMES_WEBUI_HOST:-127.0.0.1}}"
-  local port="${PORT:-${HERMES_WEBUI_PORT:-8787}}"
+  local port="${PORT:-${HERMES_WEBUI_PORT:-8788}}"
   local log_path="${LOG_FILE}"
   local pid uptime health
 

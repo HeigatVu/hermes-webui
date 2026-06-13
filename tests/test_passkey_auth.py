@@ -53,7 +53,7 @@ class FakeHeaders(dict):
 
 
 class FakeHandler:
-    headers = FakeHeaders({"Host": "localhost:8787"})
+    headers = FakeHeaders({"Host": "localhost:8788"})
 
 
 def _set_paths(monkeypatch, tmp_path):
@@ -63,7 +63,7 @@ def _set_paths(monkeypatch, tmp_path):
     return passkeys
 
 
-def _client_data(kind, challenge, origin="http://localhost:8787"):
+def _client_data(kind, challenge, origin="http://localhost:8788"):
     raw = json.dumps({"type": kind, "challenge": challenge, "origin": origin}).encode()
     return raw, b64u(raw)
 
@@ -167,7 +167,7 @@ def test_passkey_options_evict_oldest_challenges_globally(monkeypatch, tmp_path)
 
 class RouteFakeHandler:
     def __init__(self):
-        self.headers = FakeHeaders({"Host": "localhost:8787", "Content-Length": "0"})
+        self.headers = FakeHeaders({"Host": "localhost:8788", "Content-Length": "0"})
         self.rfile = io.BytesIO(b"")
         self.wfile = io.BytesIO()
         self.status = None
