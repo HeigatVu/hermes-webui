@@ -28,6 +28,7 @@ from contextlib import closing
 from urllib.parse import parse_qs, urlsplit
 from api.agent_sessions import (
     MESSAGING_SOURCES,
+    _looks_like_default_cli_title,
     is_cli_session_row,
     is_cli_session_row_visible,
     read_session_lineage_report,
@@ -54,6 +55,132 @@ def _publish_session_list_changed(reason: str, *, profile: str | None = None) ->
         # historical one-argument shape. Preserve the old signal instead of
         # turning unrelated session mutations into 500s.
         publish_session_list_changed(reason)
+
+
+def _sync_session_title_to_insights(session) -> None:
+    """Write title-only session metadata updates through to state.db when enabled."""
+    try:
+        if not load_settings().get("sync_to_insights"):
+            return
+        from api.state_sync import sync_session_usage
+
+        messages = getattr(session, "messages", None) or []
+        sync_session_usage(
+            session_id=session.session_id,
+            input_tokens=getattr(session, "input_tokens", None) or 0,
+            output_tokens=getattr(session, "output_tokens", None) or 0,
+            estimated_cost=getattr(session, "estimated_cost", 0.0),
+            model=getattr(session, "model", ""),
+            title=session.title,
+            message_count=len(messages),
+            profile=getattr(session, "profile", None),
+        )
+    except Exception:
+        logger.debug("Failed to update session title in state.db", exc_info=True)
+
+
+def _persist_generated_session_title(
+    session,
+    next_title: str,
+    *,
+    event_reason: str,
+    require_default_title: bool = False,
+) -> str:
+    normalized_title = str(next_title or "").strip()[:80] or "Untitled"
+    sid = str(getattr(session, "session_id", "") or "")
+    original_session = session
+    with _get_session_agent_lock(sid):
+        with LOCK:
+            latest = SESSIONS.get(sid)
+            if latest is not None and str(getattr(latest, "session_id", "") or "") != sid:
+                SESSIONS.pop(sid, None)
+                latest = None
+            elif latest is not None:
+                SESSIONS.move_to_end(sid)
+        if latest is None:
+            latest = Session.load(sid)
+            if latest is None:
+                raise KeyError(sid)
+        session = _ensure_full_session_before_mutation(sid, latest)
+        if getattr(session, "read_only", False):
+            raise PermissionError(f"Session {sid} is read-only")
+        if require_default_title:
+            latest_meta = {
+                "title": getattr(session, "title", None),
+                "source_tag": getattr(session, "source_tag", None),
+                "raw_source": getattr(session, "raw_source", None),
+                "session_source": getattr(session, "session_source", None),
+                "source_label": getattr(session, "source_label", None),
+            }
+            if not _looks_like_default_cli_title(latest_meta):
+                return session.title
+        session.title = normalized_title
+        from api.session_ops import mark_session_title_generated
+
+        # mark_session_title_generated sets s.llm_title_generated = True and clears manual_title.
+        mark_session_title_generated(session)
+        session.save(touch_updated_at=False)
+        with LOCK:
+            SESSIONS[sid] = session
+            SESSIONS.move_to_end(sid)
+            while len(SESSIONS) > SESSIONS_MAX:
+                SESSIONS.popitem(last=False)
+    _sync_session_title_to_insights(session)
+    _publish_session_list_changed(event_reason, profile=getattr(session, "profile", None))
+    if original_session is not session:
+        original_session.title = session.title
+        original_session.llm_title_generated = session.llm_title_generated
+        original_session.manual_title = session.manual_title
+    return session.title
+
+
+def _queue_generated_title_for_imported_session(session, cli_meta: dict | None) -> None:
+    try:
+        cli_meta = dict(cli_meta or {})
+        if not session or cli_meta.get("read_only") or not _looks_like_default_cli_title(cli_meta):
+            return
+        sid = str(getattr(session, "session_id", "") or "")
+        if not sid:
+            return
+
+        def _run() -> None:
+            try:
+                current = Session.load(sid)
+                if not current:
+                    return
+                current = _ensure_full_session_before_mutation(sid, current)
+                if getattr(current, "read_only", False):
+                    return
+                current_meta = {
+                    "title": getattr(current, "title", None),
+                    "source_tag": getattr(current, "source_tag", None),
+                    "raw_source": getattr(current, "raw_source", None),
+                    "session_source": getattr(current, "session_source", None),
+                    "source_label": getattr(current, "source_label", None),
+                }
+                if not _looks_like_default_cli_title(current_meta):
+                    return
+                next_title, _reason, _raw_preview = generate_session_title_for_session(current)
+                normalized_current = str(getattr(current, "title", "") or "").strip()
+                normalized_next = str(next_title or "").strip()
+                if not normalized_next or normalized_next == normalized_current:
+                    return
+                _persist_generated_session_title(
+                    current,
+                    normalized_next,
+                    event_reason="session_title_regenerate",
+                    require_default_title=True,
+                )
+            except Exception:
+                logger.debug("Failed to generate imported session title for %s", sid, exc_info=True)
+
+        threading.Thread(target=_run, daemon=True, name=f"imported-title-{sid}").start()
+    except Exception:
+        logger.debug(
+            "Failed to queue imported session title generation for %s",
+            getattr(session, "session_id", None),
+            exc_info=True,
+        )
 
 
 # ── Cron run tracking ────────────────────────────────────────────────────────
@@ -6658,6 +6785,10 @@ def handle_get(handler, parsed) -> bool:
         from api.commands import list_commands
         return j(handler, {"commands": list_commands()})
 
+    if parsed.path == "/api/commands/bundles":
+        from api.commands import list_command_bundles
+        return j(handler, {"bundles": list_command_bundles()})
+
     if parsed.path == "/api/updates/check":
         settings = load_settings()
         if not settings.get("check_for_updates", True):
@@ -6915,7 +7046,7 @@ def handle_get(handler, parsed) -> bool:
 
     # ── Memory API (GET) ──
     if parsed.path == "/api/memory":
-        return _handle_memory_read(handler)
+        return _handle_memory_read(handler, parsed)
 
     # ── Profile API (GET) ──
     if parsed.path == "/api/profiles":
@@ -7603,27 +7734,6 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/sessions/cleanup_zero_message":
         return _handle_sessions_cleanup(handler, body, zero_only=True)
 
-    def _sync_session_title_to_insights(session):
-        """Write title-only session metadata updates through to state.db when enabled."""
-        try:
-            if not load_settings().get("sync_to_insights"):
-                return
-            from api.state_sync import sync_session_usage
-
-            messages = getattr(session, "messages", None) or []
-            sync_session_usage(
-                session_id=session.session_id,
-                input_tokens=getattr(session, "input_tokens", None) or 0,
-                output_tokens=getattr(session, "output_tokens", None) or 0,
-                estimated_cost=getattr(session, "estimated_cost", 0.0),
-                model=getattr(session, "model", ""),
-                title=session.title,
-                message_count=len(messages),
-                profile=getattr(session, "profile", None),
-            )
-        except Exception:
-            logger.debug("Failed to update session title in state.db", exc_info=True)
-
     if parsed.path == "/api/session/rename":
         try:
             require(body, "session_id", "title")
@@ -7656,19 +7766,12 @@ def handle_post(handler, parsed) -> bool:
             s = _ensure_full_session_before_mutation(sid, s)
         except KeyError:
             return bad(handler, "Session not found", 404)
-        if getattr(s, "read_only", False) or getattr(s, "is_imported", False):
+        if getattr(s, "read_only", False):
             return bad(handler, "Read-only imported sessions cannot be renamed", 403)
         next_title, reason, raw_preview = generate_session_title_for_session(s, prefer_latest=prefer_latest)
         if not next_title:
             return bad(handler, f"Could not generate a better title ({reason or 'empty'})", 422)
-        with _get_session_agent_lock(sid):
-            s.title = str(next_title).strip()[:80] or "Untitled"
-            from api.session_ops import mark_session_title_generated
-            # mark_session_title_generated sets s.llm_title_generated = True and clears manual_title.
-            mark_session_title_generated(s)
-            s.save(touch_updated_at=False)
-        _sync_session_title_to_insights(s)
-        publish_session_list_changed("session_title_regenerate", profile=getattr(s, "profile", None))
+        _persist_generated_session_title(s, next_title, event_reason="session_title_regenerate")
         return j(handler, {
             "session": s.compact(),
             "title": s.title,
@@ -8382,6 +8485,22 @@ def handle_post(handler, parsed) -> bool:
         return _handle_clarify_respond(handler, body)
 
     # ── Commands (POST) ──
+    if parsed.path == "/api/commands/bundles/resolve":
+        from api.commands import resolve_bundle_command
+
+        command = str(body.get("command", "") or "").strip()
+        if not command:
+            return bad(handler, "command is required")
+
+        try:
+            return j(handler, resolve_bundle_command(command))
+        except KeyError:
+            return bad(handler, "Bundle command not found", 404)
+        except ValueError as e:
+            return bad(handler, str(e), 400)
+        except RuntimeError as e:
+            return bad(handler, _sanitize_error(e), 500)
+
     if parsed.path == "/api/commands/exec":
         from api.commands import execute_agent_command, execute_plugin_command
 
@@ -11979,7 +12098,172 @@ def _handle_cron_recent(handler, parsed):
         return j(handler, {"completions": [], "since": since})
 
 
-def _handle_memory_read(handler):
+_PROJECT_CONTEXT_HERMES_NAMES = (".hermes.md", "HERMES.md")
+# Mirror the agent's lowercase filename variants (agents.md / claude.md) so the
+# tab does not under-report on case-sensitive filesystems.
+_PROJECT_CONTEXT_CWD_NAMES = (
+    "AGENTS.md",
+    "agents.md",
+    "CLAUDE.md",
+    "claude.md",
+    ".cursorrules",
+)
+# Modern Cursor rules live in a directory of .mdc files, which the agent also loads.
+_PROJECT_CONTEXT_CURSOR_RULES_GLOB = ".cursor/rules/*.mdc"
+_PROJECT_CONTEXT_MAX_BYTES = 20_000
+
+
+def _strip_project_context_frontmatter(content: str) -> str:
+    """Strip a leading YAML frontmatter block, mirroring the agent's loader.
+
+    The agent removes a leading ``---\\n ... \\n---`` block before injecting a
+    context file. Without this the tab would display frontmatter the agent never
+    sends to the model.
+    """
+    if not content.startswith("---"):
+        return content
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return content
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() in ("---", "..."):
+            return "".join(lines[idx + 1:]).lstrip("\n")
+    return content
+
+
+def _project_context_git_root(start: Path) -> Path | None:
+    """Return the nearest git root for project context discovery."""
+    current = start.resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _project_context_candidates(workspace: Path) -> list[Path]:
+    """Mirror the agent's first-match project context file priority."""
+    cwd = workspace.resolve()
+    candidates: list[Path] = []
+    stop_at = _project_context_git_root(cwd)
+
+    for directory in [cwd, *cwd.parents]:
+        for name in _PROJECT_CONTEXT_HERMES_NAMES:
+            candidates.append(directory / name)
+        if stop_at and directory == stop_at:
+            break
+
+    for name in _PROJECT_CONTEXT_CWD_NAMES:
+        candidates.append(cwd / name)
+
+    # Modern Cursor rules: the agent reads .cursor/rules/*.mdc in addition to
+    # the legacy .cursorrules file. Sort for deterministic ordering.
+    try:
+        candidates.extend(sorted(cwd.glob(_PROJECT_CONTEXT_CURSOR_RULES_GLOB)))
+    except OSError:
+        pass
+
+    return candidates
+
+
+def _memory_project_context_workspace(parsed) -> Path | None:
+    qs = parse_qs(parsed.query or "") if parsed is not None else {}
+    sid = qs.get("session_id", [""])[0]
+    if sid:
+        try:
+            # A blank session workspace (freshly-created/draft sessions) must not
+            # fall through to Path("").resolve(), which returns the server's own
+            # CWD and would surface the install's AGENTS.md/HERMES.md as if it
+            # were the user's project context.
+            ws = (get_session(sid).workspace or "").strip()
+            if not ws:
+                return None
+            return Path(ws).expanduser().resolve()
+        except Exception:
+            return None
+
+    raw_workspace = qs.get("workspace", [""])[0] or os.environ.get("TERMINAL_CWD", "") or get_last_workspace()
+    if not raw_workspace:
+        return None
+    try:
+        return Path(resolve_trusted_workspace(raw_workspace)).expanduser().resolve()
+    except Exception:
+        logger.debug("Skipping project context for untrusted workspace %s", raw_workspace, exc_info=True)
+        return None
+
+
+def _read_active_project_context(workspace: Path | None) -> dict:
+    payload = {
+        "content": "",
+        "path": "",
+        "mtime": None,
+        "workspace": str(workspace) if workspace else "",
+        "shadowed": [],
+    }
+    if not workspace:
+        return payload
+    try:
+        if not workspace.exists() or not workspace.is_dir():
+            return payload
+    except OSError:
+        return payload
+
+    seen: set[str] = set()
+    readable: list[dict] = []
+    for candidate in _project_context_candidates(workspace):
+        try:
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            key = os.path.normcase(str(resolved)).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+            # Mirror what the agent actually injects: strip YAML frontmatter and
+            # cap each source, so the tab reports the effective context rather
+            # than raw file bytes the agent never sends to the model.
+            content = _strip_project_context_frontmatter(content)
+            if len(content) > _PROJECT_CONTEXT_MAX_BYTES:
+                content = content[:_PROJECT_CONTEXT_MAX_BYTES]
+            if not content.strip():
+                continue
+            readable.append(
+                {
+                    "name": resolved.name,
+                    "path": str(resolved),
+                    "content": content,
+                    "mtime": resolved.stat().st_mtime,
+                }
+            )
+        except Exception:
+            logger.debug("Could not read project context candidate %s", candidate, exc_info=True)
+
+    if not readable:
+        return payload
+
+    active = readable[0]
+    payload.update(
+        {
+            "content": active["content"],
+            "path": active["path"],
+            "mtime": active["mtime"],
+            "name": active["name"],
+            "shadowed": [
+                {
+                    "name": item["name"],
+                    "path": item["path"],
+                    "mtime": item["mtime"],
+                    "shadowed_by": active["name"],
+                    "shadowed_by_path": active["path"],
+                }
+                for item in readable[1:]
+            ],
+        }
+    )
+    return payload
+
+
+def _handle_memory_read(handler, parsed=None):
     try:
         from api.profiles import get_active_hermes_home
 
@@ -12006,18 +12290,25 @@ def _handle_memory_read(handler):
         if soul_file.exists()
         else ""
     )
+    project_context = _read_active_project_context(_memory_project_context_workspace(parsed))
     return j(
         handler,
         {
             "memory": _redact_text(memory),
             "user": _redact_text(user),
             "soul": _redact_text(soul),
+            "project_context": _redact_text(project_context["content"]),
             "memory_path": str(mem_file),
             "user_path": str(user_file),
             "soul_path": str(soul_file),
+            "project_context_path": project_context["path"],
+            "project_context_name": project_context.get("name", ""),
+            "project_context_workspace": project_context["workspace"],
             "memory_mtime": mem_file.stat().st_mtime if mem_file.exists() else None,
             "user_mtime": user_file.stat().st_mtime if user_file.exists() else None,
             "soul_mtime": soul_file.stat().st_mtime if soul_file.exists() else None,
+            "project_context_mtime": project_context["mtime"],
+            "project_context_shadowed": project_context["shadowed"],
             "external_notes_enabled": _external_notes_sources_enabled(),
         },
     )
@@ -16115,6 +16406,17 @@ def _handle_session_import_cli(handler, body):
     publish_session_list_changed(
         "session_import_cli",
         profile=getattr(s, "profile", None),
+    )
+    _queue_generated_title_for_imported_session(
+        s,
+        {
+            "title": cli_title,
+            "source_tag": cli_source_tag,
+            "raw_source": cli_raw_source,
+            "session_source": cli_session_source,
+            "source_label": cli_source_label,
+            "read_only": cli_read_only,
+        },
     )
     return j(
         handler,

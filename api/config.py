@@ -2482,6 +2482,49 @@ def _candidate_supports_reasoning(candidate: str) -> bool:
     return False
 
 
+def _nested_route_reasoning_denied(model: str) -> bool:
+    """Hard deny for nested Gemini gateway routes that must never show a reasoning toggle."""
+    lower = str(model or "").strip().lower()
+    if not lower:
+        return False
+    for prefix in ("vertex/gemini-", "gemini_cli/gemini-"):
+        if lower.startswith(prefix):
+            tail = lower[len(prefix) :]
+            if tail.startswith("embedding") or "image" in tail or "imagine" in tail:
+                return True
+    return False
+
+
+def _nested_gateway_route_reasoning(model: str) -> bool:
+    """Recognize nested ``vertex/gemini-`` and ``gemini_cli/gemini-`` routes on custom providers.
+
+    The slash-prefix heuristic list includes ``google/gemini-2`` but not gateway-prefixed
+    Gemini ids, so capable models behind custom aggregators stayed hidden.
+    """
+    lower = str(model or "").strip().lower()
+    if not lower:
+        return False
+    for prefix in ("vertex/gemini-", "gemini_cli/gemini-"):
+        if lower.startswith(prefix):
+            tail = lower[len(prefix) :]
+            if tail.startswith("embedding") or "image" in tail or "imagine" in tail:
+                return False
+            # Gemini thinking/reasoning controls are documented for the 2.5
+            # series and 3-era models only — 1.5 (and earlier) have no thinking
+            # support, so a reasoning selector on e.g. ``vertex/gemini-1.5-pro``
+            # would let a user pick an effort that the route then rejects.
+            # Version-gate the allow to the reasoning-capable families.
+            if (
+                tail == "2.5"
+                or tail.startswith(("2.5-", "2.5.", "3-", "3."))
+                or "thinking" in tail
+                or "reasoning" in tail
+            ):
+                return True
+            return False
+    return False
+
+
 def _filter_reasoning_efforts_for_provider(
     efforts: list[str],
     model_id: str,
@@ -2534,6 +2577,8 @@ def _heuristic_reasoning_efforts(model_id: str, provider_id: str) -> list[str]:
         "xiaomi/",
     )
     if any(model.startswith(prefix) for prefix in prefixes):
+        return list(VALID_REASONING_EFFORTS)
+    if _nested_gateway_route_reasoning(model):
         return list(VALID_REASONING_EFFORTS)
     # Named custom providers often rewrite model ids with dots, underscores, or
     # extra vendor namespaces. Normalize those shapes before applying family-level
@@ -2601,6 +2646,9 @@ def resolve_model_reasoning_efforts(
         return []
 
     hinted_model = _strip_provider_hint_for_reasoning(model)
+
+    if _nested_route_reasoning_denied(hinted_model):
+        return []
 
     try:
         from hermes_cli.models import (

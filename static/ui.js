@@ -675,10 +675,70 @@ function _openImgLightbox(imgEl) {
   }
   _openImgLightboxWithNav(src, alt, allImages, startIndex);
 }
+function _openMermaidLightbox(svgEl) {
+  if(!svgEl) return;
+  const lb = document.createElement('div');
+  lb.className = 'img-lightbox';
+  lb.setAttribute('role', 'dialog');
+  lb.setAttribute('aria-modal', 'true');
+  lb.setAttribute('aria-label', 'Mermaid diagram');
+  const clone = svgEl.cloneNode(true);
+  const idMap = new Map();
+  const idPrefix = 'mermaid-lightbox-'+Math.random().toString(36).slice(2,10)+'-';
+  const idNodes = [clone, ...clone.querySelectorAll('[id]')].filter(el => el.id);
+  idNodes.forEach(el => {
+    const nextId = idPrefix + el.id;
+    idMap.set(el.id, nextId);
+    el.id = nextId;
+  });
+  if(idMap.size){
+    const refAttrs = ['href','xlink:href','fill','stroke','filter','clip-path','mask','marker-start','marker-mid','marker-end','aria-labelledby','aria-describedby'];
+    [clone, ...clone.querySelectorAll('*')].forEach(el => {
+      refAttrs.forEach(attr => {
+        const value = el.getAttribute(attr);
+        if(!value) return;
+        let nextValue = value.replace(/url\(#([^)]+)\)/g, (match, refId) => idMap.has(refId) ? `url(#${idMap.get(refId)})` : match);
+        if(nextValue.startsWith('#') && idMap.has(nextValue.slice(1))){
+          nextValue = '#'+idMap.get(nextValue.slice(1));
+        }
+        if(nextValue !== value){
+          el.setAttribute(attr, nextValue);
+        }
+      });
+    });
+    clone.querySelectorAll('style').forEach(styleEl => {
+      let styleText = styleEl.textContent || '';
+      idMap.forEach((nextId, originalId) => {
+        const escapedId = originalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        styleText = styleText.replace(new RegExp(`url\\(#${escapedId}\\)`, 'g'), `url(#${nextId})`);
+        styleText = styleText.replace(new RegExp(`(^|[^\\w-])#${escapedId}(?=$|[^\\w-])`, 'g'), (match, prefix) => `${prefix}#${nextId}`);
+      });
+      styleEl.textContent = styleText;
+    });
+  }
+  clone.classList.add('mermaid-lightbox-svg');
+  clone.removeAttribute('width');
+  clone.removeAttribute('height');
+  clone.onclick = e => e.stopPropagation();
+  const cls = document.createElement('button');
+  cls.className = 'img-lightbox-close';
+  cls.setAttribute('aria-label', 'Close');
+  cls.textContent = '×';
+  cls.onclick = () => _closeImgLightbox(lb);
+  lb.appendChild(clone);
+  lb.appendChild(cls);
+  lb.onclick = () => _closeImgLightbox(lb);
+  lb._keyHandler = e => {
+    if(e.key==='Escape') _closeImgLightbox(lb);
+  };
+  document.body.appendChild(lb);
+  document.addEventListener('keydown', lb._keyHandler);
+}
 function _openImgLightboxWithNav(src, alt, images, index) {
   const lb = document.createElement('div');
   lb.className = 'img-lightbox';
   lb.setAttribute('role', 'dialog');
+  lb.setAttribute('aria-modal', 'true');
   lb.setAttribute('aria-label', alt || 'Image');
   const img = document.createElement('img');
   img.src = src;
@@ -772,6 +832,8 @@ document.addEventListener('click', e => {
   // Message-attached images (already wired since v0.50.x).
   let img = e.target.closest('.msg-media-img');
   if(img){ _openImgLightbox(img); return; }
+  const mermaidSvg = e.target.closest('.mermaid-rendered svg');
+  if(mermaidSvg){ _openMermaidLightbox(mermaidSvg); return; }
   // Composer attach-tray image thumbnails — click any pasted/dropped image
   // chip to lightbox-zoom it before sending. Excludes audio/video chips,
   // which keep their inline media controls. SVG thumbnails (.attach-thumb--svg)
@@ -7631,6 +7693,17 @@ function _appendWorklogStep(group, anchor, cards, thinkingText, opts){
   }
 }
 function _syncLiveWorklogReasonsForAnchor(anchor, displayTextOverride){
+  // Worklog reason-mirroring (folding intermediate prose into a top Worklog rail
+  // and hiding the inline `assistant-segment` via `assistant-segment-worklog-source`
+  // → display:none) is the Compact Worklog presentation (#3401). In Transparent
+  // Stream mode prose must stay as visible, chronologically-placed inline segments
+  // interleaved with tool rows — so do NOT build the worklog rail or hide the
+  // inline segment here. Without this gate every round's prose mirror piles into
+  // the single top rail while tool rows append at the bottom, so all prose bunches
+  // above all tools during a live multi-round turn (#4096); it only self-heals when
+  // the turn settles and renderMessages() rebuilds with the compact-only
+  // `messageBelongsInWorklog` gate (which is already isCompactWorklogMode()-only).
+  if(typeof isCompactWorklogMode==='function' && !isCompactWorklogMode()) return;
   if(!anchor||!anchor.matches||!anchor.matches('[data-live-assistant="1"]')) return;
   const blocks=anchor.parentElement;
   if(!blocks) return;
@@ -7759,6 +7832,13 @@ function ensureActivityGroup(inner, opts){
 function normalizeLiveActivityGroupPlacement(turn){
   const blocks=_assistantTurnBlocks(turn);
   if(!blocks) return;
+  // Compact Worklog only: this reorders `.tool-call-group`/`.tool-worklog-group`
+  // containers, which exist solely on the Compact Worklog live path. Transparent
+  // Stream renders tool rows as flat `.transparent-event-row`s and never builds
+  // these group containers (see appendLiveToolCard's transparent branch), and the
+  // worklog prose-rail is gated off in transparent mode (#4096), so the selector
+  // below matches nothing and this is a no-op there. Kept implicit (empty match)
+  // rather than an early return so reconnect/restore behavior is unchanged.
   const groups=Array.from(
     blocks.querySelectorAll('.tool-worklog-group[data-live-tool-worklog-group="1"],.tool-call-group[data-live-tool-worklog-group="1"],.tool-call-group[data-live-tool-call-group="1"]')
   );
@@ -11177,8 +11257,33 @@ function loadDiffInline(container){
   });
 }
 
+const CSV_MAX_SIZE=256*1024; // 256 KB cap for inline CSV rendering
+
+function buildCsvTablePreview(path, text){
+  if(typeof text!=='string') return {errorKey:'csv_error'};
+  if(text.length>CSV_MAX_SIZE) return {errorKey:'csv_too_large'};
+  const rows=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(r=>r.trim());
+  if(rows.length<2) return {errorKey:'csv_no_data'};
+  // Auto-detect separator (comma, semicolon, tab)
+  // Heuristic: uses the first separator found in the header row. Edge case:
+  // quoted fields containing commas without non-quoted commas in the header
+  // could cause misdetection — acceptable trade-off for a preview renderer.
+  const firstLine=rows[0];
+  const separators=[',',';','\t'];
+  const sep=separators.find(s=>firstLine.includes(s))||',';
+  const headers=rows[0].split(sep).map(c=>c.trim().replace(/^["']|["']$/g,''));
+  const bodyRows=rows.slice(1).map(r=>'<tr>'+r.split(sep).map(c=>`<td>${esc(c.trim().replace(/^["']|["']$/g,''))}</td>`).join('')+'</tr>').join('');
+  const headerRow=headers.map(h=>`<th>${esc(h)}</th>`).join('');
+  return {
+    html:`<div class="csv-table-wrap"><div class="pre-header">${esc(path.split('/').pop())} <span style="opacity:.5;font-size:11px">${t('csv_header_note')}</span></div><table class="csv-table"><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table></div>`,
+  };
+}
+
+function _csvPreviewErrorHtml(path, errorKey){
+  return `<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t(errorKey)}</span></div>`;
+}
+
 function loadCsvInline(container){
-  const CSV_MAX_SIZE=256*1024; // 256 KB cap for inline CSV rendering
   const root=container||document;
   root.querySelectorAll('.csv-inline-load:not([data-loaded])').forEach(el=>{
     el.setAttribute('data-loaded','1');
@@ -11186,29 +11291,11 @@ function loadCsvInline(container){
     fetch('api/media?path='+encodeURIComponent(path))
       .then(r=>{if(!r.ok) throw new Error(r.status);return r.text();})
       .then(text=>{
-        if(text.length>CSV_MAX_SIZE){
-          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_too_large')}</span></div>`;
-          return;
-        }
-        const rows=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(r=>r.trim());
-        if(rows.length<2){
-          el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_no_data')}</span></div>`;
-          return;
-        }
-        // Auto-detect separator (comma, semicolon, tab)
-        // Heuristic: uses the first separator found in the header row. Edge case:
-        // quoted fields containing commas without non-quoted commas in the header
-        // could cause misdetection — acceptable trade-off for a preview renderer.
-        const firstLine=rows[0];
-        const separators=[',',';','\t'];
-        let sep=separators.find(s=>firstLine.includes(s))||',';
-        const headers=rows[0].split(sep).map(c=>c.trim().replace(/^["']|["']$/g,''));
-        const bodyRows=rows.slice(1).map(r=>'<tr>'+r.split(sep).map(c=>`<td>${esc(c.trim().replace(/^["']|["']$/g,''))}</td>`).join('')+'</tr>').join('');
-        const headerRow=headers.map(h=>`<th>${esc(h)}</th>`).join('');
-        el.outerHTML=`<div class="csv-table-wrap"><div class="pre-header">${esc(path.split('/').pop())} <span style="opacity:.5;font-size:11px">${t('csv_header_note')}</span></div><table class="csv-table"><thead><tr>${headerRow}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+        const preview=buildCsvTablePreview(path, text);
+        el.outerHTML=preview.html||_csvPreviewErrorHtml(path, preview.errorKey||'csv_error');
       })
       .catch(()=>{
-        el.outerHTML=`<div class="diff-inline-error">${esc(path.split('/').pop())}<br><span style="color:var(--muted);font-size:12px">${t('csv_error')}</span></div>`;
+        el.outerHTML=_csvPreviewErrorHtml(path, 'csv_error');
       });
   });
 }
