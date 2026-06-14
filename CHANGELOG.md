@@ -3,6 +3,62 @@
 
 ## [Unreleased]
 
+## [v0.51.419] — 2026-06-14 — Release OF (settled-stream message-count consistency, #4192)
+
+### Fixed
+
+- **Streaming completion payloads now report a message count that matches the embedded transcript.** Settled `done`/error SSE payloads (including the gateway-routed chat `done` event) no longer reuse stale compact metadata when they embed the full `messages` array, so completion/reconcile code can't mistake a complete payload for a short stale window. A shared `_session_payload_with_full_messages()` helper sets `message_count` to the embedded transcript length at all three settled-payload sites. (#4192)
+
+## [v0.51.418] — 2026-06-14 — Release OE (slash-command autocomplete after non-ASCII prefix + multiple slashes, #3924)
+
+### Fixed
+
+- **Slash-command autocomplete now works after a non-ASCII (e.g. CJK) prefix and when the line already contains a slash (#3924).** A new shared helper finds the slash that begins the active command token — only at the start of the line or after whitespace — and is used consistently for detection, parsing, and replacement. Prose containing a mid-word slash (URLs, `provider/model` IDs) no longer opens the command dropdown or blocks sending, `~/` workspace-path autocomplete is no longer shadowed, and `/model openrouter/deepseek`-style commands parse their sub-arguments from the leading command slash instead of a slash inside the argument. (#3924)
+
+## [v0.51.417] — 2026-06-14 — Release OD (sidebar issue-number + external-refresh fixes, #4154/#3916)
+
+### Fixed
+
+- **GitHub issue numbers in session titles are no longer stripped from the sidebar (#4154).** The sidebar tag extractor treated any `#word` as an attention tag and removed it from the displayed title, so a title like "Fix #1234" lost its issue reference. Purely-numeric `#NNNN` patterns are now preserved while real attention tags (`#approval`, `#clarify`, …) still extract. (#4154)
+- **The 30-second external-refresh poll no longer fires for non-external sessions (#3916).** `refreshActiveSessionIfExternallyUpdated` now early-returns for WebUI-native sessions, which don't need the external-update reconciliation, avoiding needless reload churn. (#3916)
+
+## [v0.51.416] — 2026-06-14 — Release OC (cache + single-flight /api/sessions payloads, #3791)
+
+### Fixed
+
+- **The session sidebar list is now cached and single-flighted, so multi-tab and polling churn no longer recompute it on every request.** Concurrent identical `/api/sessions` requests coalesce onto one computation, and the computed payload is cached with a key that includes the active profile, the `all_profiles` flag, the session-source toggles (CLI / previous-messaging / cron), and the source filter — so no cache entry is shared across profiles or settings. Mutations invalidate the matching profile plus aggregate caches (and attention/import events clear all caches), and live stream / pending / attention fields are overlaid at response time so unread and live state stay fresh. (#3791)
+
+## [v0.51.415] — 2026-06-14 — Release OB (keep complete sidebar metadata on the index fastpath, #4166)
+
+### Fixed
+
+- **The session sidebar no longer re-reads every session's sidecar file on each `/api/sessions` poll.** A complete `_index.json` row (one that carries `message_count`, `user_message_count`, and `last_message_at`) now stays on the index fastpath even when the sidecar file's mtime is newer than the row's logical timestamp — a pattern that is common after compression and previously turned each sidebar poll into hundreds of per-sidecar JSON prefix scans. The mtime "rescue" reload is kept for incomplete, legacy, and stale-zero-message rows whose counters can't be trusted, so sidebar correctness is unchanged while the steady-state poll cost drops. (#4166)
+
+## [v0.51.414] — 2026-06-14 — Release OA (fix misleading regenerate-title error message, #4186)
+
+### Fixed
+
+- **The read-only error for the regenerate-title action now reads correctly.** Attempting to regenerate a title on a read-only imported session returned "Read-only imported sessions cannot be renamed" (copy-pasted from the rename handler); it now says "cannot regenerate titles" to match the actual action. (#4186)
+
+## [v0.51.413] — 2026-06-14 — Release NZ (restore approval pending-fallback reliability, #4107)
+
+### Fixed
+
+- **Approval cards no longer get stuck when the live SSE notification is missed (#4107).** The approval pending-fallback (the polling path that recovers an approval prompt when the SSE event doesn't arrive) was unreliable: the gateway mirror token couldn't persist on the in-memory approval entry, so a fresh `approval_id` was minted on every poll and the client's resolve never matched; and a stale explicit `approval_id` could resolve a different live gateway entry through the no-id fallback. The mirror token is now stored on the entry's `data` dict so `approval_id` stays stable across reconciles, and the `_gateway_queues` fallback only fires when no explicit `approval_id` was supplied (preserving the legacy no-id client path). (#4107)
+
+## [v0.51.412] — 2026-06-14 — Release NY (gateway reasoning previews + regenerate-title for CLI/TUI sessions, #4146/#4183)
+
+### Fixed
+
+- **Gateway-routed chat now surfaces reasoning/thinking previews in the WebUI (#4146).** When chat is routed through a running Hermes Gateway, reasoning fragments streamed by reasoning-capable models (`delta.reasoning_content`) now appear as a thinking preview, matching the non-gateway streaming path. Only string reasoning fragments are forwarded (structured payloads are never stringified into the browser), inter-delta whitespace is preserved, and the accumulated reasoning is persisted onto the saved assistant message so it survives a transcript reload. (#4146)
+- **Regenerating a title now works for CLI/TUI sessions that exist only in `state.db` (#4183).** The `/api/session/title/regenerate` endpoint previously used a sidecar-only lookup, so CLI/TUI sessions without a materialized sidecar JSON returned "Session not found". It now materializes a writable sidecar from `state.db` (the same pattern rename and archive use) and returns a clear 403 for read-only imported sessions. (#4183)
+
+## [v0.51.411] — 2026-06-14 — Release NX (offline recovery verifies unreliable browser offline reports via /health probe, #4170)
+
+### Fixed
+
+- **Offline recovery now verifies unreliable browser offline reports with the existing `/health` probe before showing or sticking on the browser-reason banner.** `navigator.onLine` is treated as a hint for the banner reason, while server reachability remains the source of truth, so browsers that incorrectly report offline can recover without a page reload or permanent connection-lost state. The health probe is bounded by a 3s `AbortController` timeout so a black-hole network can't delay the banner. (#4170)
+
 ## [v0.51.410] — 2026-06-14 — Release NW (chat Mermaid lightbox + workspace CSV table preview, #4075/#4025)
 
 ### Added

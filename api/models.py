@@ -2770,13 +2770,26 @@ def _row_may_need_sidecar_metadata_refresh(
         # so only true continuations are eligible.
         if str(session.get('session_source') or '').strip().lower() == 'fork':
             return False
+        if session.get('message_count') is None or session.get('last_message_at') is None:
+            return True
+        # Lineage fields are enriched from state.db in a batched pass later in
+        # all_sessions(). A complete indexed lineage row must not be reloaded
+        # from its sidecar merely because the filesystem mtime is newer than the
+        # logical message timestamp; that pattern is common after compression
+        # and turns each /api/sessions poll into hundreds of JSON prefix scans.
+        # Keep the mtime repair path only for rows whose counters are known bad
+        # or incomplete enough that the index cannot be trusted.
         lineage_shaped = bool(
             session.get('parent_session_id')
             or session.get('_lineage_root_id')
             or session.get('_compression_segment_count')
         )
-        needs_mtime_check = lineage_shaped or (
-            sid and _looks_like_stale_zero_message_row(session)
+        needs_mtime_check = bool(
+            sid
+            and (
+                _looks_like_stale_zero_message_row(session)
+                or (lineage_shaped and session.get('user_message_count') is None)
+            )
         )
         if needs_mtime_check and _sidecar_mtime_after_index_timestamp(session):
             return True
@@ -2842,6 +2855,19 @@ def _stale_snapshot_metadata_refresh_ids(sessions: list[dict]) -> set[str]:
             if not sid:
                 continue
             if _sidebar_message_count(snapshot) > best_visible_count:
+                continue
+            # Modern index rows already carry enough sidebar summary data to
+            # decide snapshot visibility. Only legacy/incomplete rows need the
+            # sidecar mtime rescue; otherwise every historical snapshot whose
+            # file mtime is newer than its logical timestamp is re-read on every
+            # sidebar poll. Treat stale-zero-message rows as incomplete even
+            # when user_message_count/last_message_at are present; their sidecar
+            # may hold the real count that makes the snapshot visible.
+            if (
+                snapshot.get('user_message_count') is not None
+                and int(snapshot.get('message_count') or 0) > 0
+                and snapshot.get('last_message_at') is not None
+            ):
                 continue
             if _sidecar_mtime_after_index_timestamp(snapshot):
                 refresh_ids.add(sid)

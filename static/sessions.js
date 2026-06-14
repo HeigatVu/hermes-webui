@@ -3650,6 +3650,7 @@ async function refreshActiveSessionIfExternallyUpdated(reason){
   if(_activeSessionExternalRefreshInFlight) return;
   if(!S.session || !S.session.session_id) return;
   if(S.busy || S.activeStreamId) return;
+  if(!_isExternalSession(S.session)) return;
   // Cooldown: don't force-reload immediately after streaming ends — the
   // "done" event already delivered the final messages. Reloading here would
   // clear S.toolCalls and lose Activity.
@@ -4726,7 +4727,7 @@ function _sessionTitleIsDefaultWebUI(rawTitle){
 
 function _sessionTitleTags(rawTitle){
   if(_sessionTitleIsDefaultWebUI(rawTitle)) return [];
-  return String(rawTitle||'').match(/#[\w-]+/g)||[];
+  return String(rawTitle||'').match(/#(?!\d+\b)[\w-]+/g)||[];
 }
 
 function _activeSessionIdForSidebar(){
@@ -5427,7 +5428,7 @@ function renderSessionListFromCache(){
     if(isActive&&S.session&&S.session._flash)delete S.session._flash;
     const rawTitle=_sessionDisplayTitle(s);
     const tags=_sessionTitleTags(rawTitle);
-    let cleanTitle=tags.length?rawTitle.replace(/#[\w-]+/g,'').trim():rawTitle;
+    let cleanTitle=tags.length?rawTitle.replace(/#(?!\d+\b)[\w-]+/g,'').trim():rawTitle;
     // Guard: system prompt content must never surface as a visible session title
     if(cleanTitle.startsWith('[SYSTEM:')){
       cleanTitle='Session';

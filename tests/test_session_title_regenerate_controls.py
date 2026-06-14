@@ -55,7 +55,7 @@ def test_regenerate_endpoint_persists_generated_title_without_reordering_sidebar
     block = ROUTES_PY[endpoint_idx:next_endpoint_idx]
     assert "generate_session_title_for_session" in block
     assert '_persist_generated_session_title(s, next_title, event_reason="session_title_regenerate")' in block
-    assert "Read-only imported sessions cannot be renamed" in block
+    assert "Read-only imported sessions cannot regenerate titles" in block
 
 
 def test_regenerate_helper_persists_generated_title_and_publishes_sidebar_refresh():
