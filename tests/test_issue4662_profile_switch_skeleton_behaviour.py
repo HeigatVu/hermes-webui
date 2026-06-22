@@ -36,6 +36,7 @@ function makeEl(tag) {
     tagName: (tag || 'div').toUpperCase(),
     className: '',
     style: {},
+    dataset: {},
     _attrs: {},
     children: [],
     innerHTML: '',
@@ -113,6 +114,9 @@ const wsSrc = fs.readFileSync(process.argv[3], 'utf8');
 
 // Module-scope state the session builder references.
 var _sessionListSkeletonActive = false;
+var _sessionVirtualScrollRaf = 0;
+global.cancelAnimationFrame = function(){};
+global.requestAnimationFrame = function(){ return 0; };
 eval(extractConst(sessSrc, '_SESSION_SKELETON_GROUPS'));
 eval(extractFunc(sessSrc, 'showSessionListSkeleton'));
 

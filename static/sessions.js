@@ -3538,6 +3538,19 @@ function showSessionListSkeleton(){
   list.innerHTML = '';
   list.appendChild(wrap);
   list.scrollTop = 0;
+  // Tear down any active virtual-scroll state so a pending scroll-driven render
+  // can't repaint the previous profile's cached rows over this skeleton (#4662
+  // Codex gate). Cancel the queued RAF and drop the data-session-virtual-*
+  // window markers; the real render rebuilds them from the new payload.
+  if(typeof _sessionVirtualScrollRaf!=='undefined'&&_sessionVirtualScrollRaf){
+    cancelAnimationFrame(_sessionVirtualScrollRaf);
+    _sessionVirtualScrollRaf=0;
+  }
+  delete list.dataset.sessionVirtualTotal;
+  delete list.dataset.sessionVirtualStart;
+  delete list.dataset.sessionVirtualEnd;
+  delete list.dataset.sessionVirtualFilter;
+  delete list.dataset.sessionVirtualActiveAnchor;
   _sessionListSkeletonActive = true;
 }
 
@@ -5220,6 +5233,11 @@ function _sessionVirtualSpacer(height, where){
 
 function _scheduleSessionVirtualizedRender(){
   _sessionListLastScrollAt=Date.now();
+  // While a profile-switch skeleton is up, ignore virtual-scroll events: the
+  // cached rows are the PREVIOUS profile's, and repainting them here would
+  // clobber the skeleton before the new /api/sessions response lands (#4662
+  // Codex gate). The real render clears _sessionListSkeletonActive.
+  if(_sessionListSkeletonActive) return;
   if(_renamingSid||_sessionVirtualScrollRaf) return;
   const list=_sessionVirtualScrollList;
   const total=Number(list&&list.dataset&&list.dataset.sessionVirtualTotal||0);

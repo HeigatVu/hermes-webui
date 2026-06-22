@@ -98,6 +98,24 @@ class TestSessionsWiring:
         assert "const _SESSION_SKELETON_GROUPS" in SESSIONS
         assert "function showSessionListSkeleton(" in SESSIONS
 
+    def test_skeleton_tears_down_virtual_scroll_state(self):
+        # #4662 Codex gate: on long virtualized sidebars, leaving the
+        # data-session-virtual-* window state + a queued scroll RAF active would
+        # let _scheduleSessionVirtualizedRender() repaint the PREVIOUS profile's
+        # cached rows over the skeleton. The builder must clear that state.
+        idx = SESSIONS.index("function showSessionListSkeleton(")
+        body = SESSIONS[idx: idx + 2000]
+        assert "cancelAnimationFrame(_sessionVirtualScrollRaf)" in body
+        assert "delete list.dataset.sessionVirtualTotal" in body
+        assert "delete list.dataset.sessionVirtualStart" in body
+        assert "delete list.dataset.sessionVirtualEnd" in body
+
+    def test_virtual_render_guarded_by_skeleton_flag(self):
+        # The virtual-scroll scheduler must bail while a skeleton is up.
+        idx = SESSIONS.index("function _scheduleSessionVirtualizedRender(")
+        body = SESSIONS[idx: idx + 600]
+        assert "if(_sessionListSkeletonActive) return;" in body
+
 
 class TestWorkspaceWiring:
     def test_builder_defined(self):
