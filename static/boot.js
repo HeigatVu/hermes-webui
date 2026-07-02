@@ -1763,7 +1763,6 @@ function exportSessionHTML(){
   a.download=`hermes-${S.session.session_id}.html`;a.click();
 }
 $('btnExportHTML').onclick=exportSessionHTML;
-if($('btnExportHTMLComposer'))$('btnExportHTMLComposer').onclick=exportSessionHTML;
 $('btnImportJSON').onclick=()=>$('importFileInput').click();
 $('importFileInput').onchange=async(e)=>{
   const file=e.target.files[0];

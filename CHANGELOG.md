@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The composer footer shows your model and workspace names again on desktop.** The Export-to-HTML button added to the composer footer in the previous release pushed the control row past its width budget, which collapsed the footer into icon-only mode and hid the model / workspace / profile text labels. The export button has been removed from the composer footer (export remains available from Settings), so the labels are visible again.
+
 ### Added
 
 - **Export a conversation to a self-contained, theme-matched HTML file.** From a session you can now download a single standalone `.html` of the transcript with the current theme's palette baked in — no external resource loads (fully offline/portable), messages rendered as escaped text (no script/style/raw-HTML injection from conversation content), and remote images neutralized. Thanks @brick-hard. (#4968)
