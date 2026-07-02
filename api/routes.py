@@ -5165,7 +5165,57 @@ def _check_csrf(handler) -> bool:
     if not _check_same_origin_browser_request(handler):
         return False
     if not _is_browser_unsafe_request(handler):
+<<<<<<< HEAD
         return True  # non-browser clients (curl, MCP, agent) have no Origin/Referer
+=======
+        return True  # non-browser clients (curl, MCP, agent) have no Origin
+    target = origin or referer
+    # Extract host:port from origin/referer
+    m = _re.match(r"^https?://([^/]+)", target)
+    if not m:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+    origin_host = m.group(1)
+    origin_scheme = m.group(0).split('://')[0].lower()  # 'http' or 'https'
+    origin_name, origin_port = _normalize_host_port(origin_host)
+    origin_allowed = False
+    # Check against explicitly allowed public origins (env var)
+    origin_value = m.group(0).rstrip('/').lower()
+    if origin_value in _allowed_public_origins():
+        origin_allowed = True
+    if not origin_allowed:
+        # Allow same-origin Host by default. Forwarded host headers are only
+        # trustworthy behind a proxy that strips untrusted inbound copies.
+        allowed_hosts = [
+            h.strip()
+            for h in [host]
+            if h.strip()
+        ]
+        trust_forwarded_host = os.getenv("HERMES_WEBUI_TRUST_FORWARDED_HOST", "").strip().lower()
+        if trust_forwarded_host in ("1", "true", "yes", "on"):
+            allowed_hosts.extend(
+                h.strip()
+                for h in [
+                    handler.headers.get("X-Forwarded-Host", ""),
+                    handler.headers.get("X-Real-Host", ""),
+                ]
+                if h.strip()
+            )
+        for allowed in allowed_hosts:
+            allowed_name, allowed_port = _normalize_host_port(allowed)
+            if origin_name == allowed_name and _ports_match(origin_scheme, origin_port, allowed_port):
+                origin_allowed = True
+                break
+    if not origin_allowed:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+>>>>>>> 7eeb73fe (Add update on aiOS)
 
     from api.auth import CSRF_HEADER_NAME, is_auth_enabled, parse_cookie, verify_csrf_token
 
@@ -5175,6 +5225,10 @@ def _check_csrf(handler) -> bool:
     submitted = handler.headers.get(CSRF_HEADER_NAME) or handler.headers.get("X-CSRF-Token")
     if verify_csrf_token(cookie_val or "", submitted or ""):
         return True
+    try:
+        handler.close_connection = True
+    except Exception:
+        pass
     return _set_csrf_failure_reason(handler, "token_mismatch")
 
 
