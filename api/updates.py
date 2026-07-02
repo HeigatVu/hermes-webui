@@ -2175,6 +2175,8 @@ def _apply_update_inner(target, channel=DEFAULT_UPDATE_CHANNEL):
         }
     stashed = False
     if status_out:
+        _run_git(['config', 'user.email', 'auto-updater@localhost'], path)
+        _run_git(['config', 'user.name', 'Auto Updater'], path)
         _, ok = _run_git(['stash', 'push', '-m', 'hermes-update-autostash'], path)
         if not ok:
             return {'ok': False, 'message': 'Failed to stash local changes'}
