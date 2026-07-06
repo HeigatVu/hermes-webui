@@ -1161,6 +1161,43 @@ function _messageViewportIntersectsRenderedRow(){
   }
   return false;
 }
+// #5637/#5638 follow-up — kill the content-visibility scrollHeight collapse at its
+// source. A virtualization wipe-and-rebuild recreates user rows as FRESH elements, which
+// discards content-visibility:auto's last-remembered size, so an off-screen user row
+// falls back to the flat `contain-intrinsic-size: auto 96px` estimate in the stylesheet.
+// A tall user row (e.g. a long paste) then collapses scrollHeight by (realHeight-96px)
+// the instant it's rebuilt off-screen, and the browser either force-clamps scrollTop
+// (dTop≈dH layer-1 jump) or re-anchors to a far row (dTop≫dH browser re-anchor jump) —
+// both mobile jump-back classes trace to this one collapse. Remember each user row's
+// height keyed by its STABLE session-relative index so a rebuild reserves the real
+// height, not 96px. Measured height (exact) wins; before a row is ever measured, a
+// content-length estimate reserves the bulk so the fresh-element frame doesn't collapse
+// either. Refreshed every measure pass, so edits self-heal. Desktop rests at
+// content-visibility:visible (intrinsic-size ignored) → inert there, zero behavior change.
+const _userRowIntrinsicHeightBySessionIdx=Object.create(null);
+function _rememberUserRowIntrinsicHeight(sessionMsgIdx, height){
+  const key=Number(sessionMsgIdx);
+  if(!Number.isFinite(key)||!(height>0)) return;
+  _userRowIntrinsicHeightBySessionIdx[key]=Math.round(height);
+}
+function _estimateUserRowIntrinsicHeight(rawText){
+  const t=String(rawText||'');
+  if(!t) return 96;
+  // ~48 chars/line at the mobile user-bubble width (≈90% of a phone viewport), ~22px per
+  // line + ~24px row chrome; floored at the stylesheet's 96px so a short row never reserves
+  // LESS than today (estimate can only add reserved height for tall rows, never regress).
+  const explicitLines=(t.match(/\n/g)||[]).length+1;
+  const wrapLines=Math.ceil(t.length/48);
+  const lines=Math.max(explicitLines, wrapLines);
+  return Math.max(96, Math.round(lines*22+24));
+}
+function _applyUserRowIntrinsicHeight(row, rawText){
+  if(!row||!row.style||!row.dataset) return;
+  const key=Number(row.dataset.sessionMsgIdx);
+  let h=Number.isFinite(key)?_userRowIntrinsicHeightBySessionIdx[key]:0;
+  if(!(h>0)) h=_estimateUserRowIntrinsicHeight(rawText!=null?rawText:row.dataset.rawText);
+  if(h>0) row.style.containIntrinsicSize='auto '+Math.round(h)+'px';
+}
 function _measureMessageVirtualRow(inner, entry){
   if(!inner||!entry) return 0;
   const primary=inner.querySelector(`[data-msg-idx="${entry.rawIdx}"]`);
@@ -1174,6 +1211,13 @@ function _measureMessageVirtualRow(inner, entry){
       totalHeight+=Math.max(0, sibling.getBoundingClientRect().height||0);
       sibling=sibling.nextElementSibling;
     }
+  }
+  // Persist the measured height so a later wipe-and-rebuild of this user row reserves its
+  // real off-screen height instead of collapsing to the 96px estimate (the collapse that
+  // clamps/re-anchors the viewport — #5637/#5638 mobile jump-back, both classes).
+  if(totalHeight>0 && primary.dataset && primary.dataset.role==='user'){
+    _rememberUserRowIntrinsicHeight(primary.dataset.sessionMsgIdx, totalHeight);
+    primary.style.containIntrinsicSize='auto '+Math.round(totalHeight)+'px';
   }
   return totalHeight;
 }
@@ -13953,6 +13997,12 @@ function renderMessages(options){
         row.dataset.rawText=newRawText;
         row.innerHTML=nextRowHtml;
       }
+      // Reserve this user row's real off-screen height up front so a wipe-and-rebuild
+      // does not collapse scrollHeight to the flat 96px estimate (the collapse that
+      // clamps/re-anchors the viewport on mobile — #5637/#5638, both jump classes). Uses
+      // the remembered measured height when this row has been measured before, else a
+      // content-length estimate; the measure pass refines it exactly next frame.
+      _applyUserRowIntrinsicHeight(row, newRawText);
       inner.appendChild(row);
       userRows.set(rawIdx, row);
       continue;
