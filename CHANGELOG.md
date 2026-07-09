@@ -5,6 +5,8 @@
 
 ### Fixed
 
+- **A wide or tall code block in the chat no longer thrashes the surrounding layout while a reply streams.** Code blocks now use CSS `contain: content`, so a growing/overflowing `<pre>` is isolated to its own rounded container (with its own horizontal scroll) instead of reflowing the message column during streaming. Thanks @rodboev. (#5770, #5760)
+
 - **Workspace switcher is now navigable with a screen reader.** The workspace switcher exposes proper roles/labels and announces the "New Chat" workspace state transiently, and the closed workspace dropdown is kept out of screen-reader navigation so it isn't read while collapsed. Visual layout and click/keyboard behavior are unchanged. Thanks @rodboev. (#5721, #5671)
 
 - **A background child stream no longer bumps its parent session to the top of the sidebar.** When a child (branched/background) stream was active, its activity re-sorted the parent session's sidebar time-bucket, yanking the parent around while you were working elsewhere. The sidebar sort no longer keys the parent's bucket off child-stream activity, so parents stay put. Thanks @rodboev. (#5729, #5699)
