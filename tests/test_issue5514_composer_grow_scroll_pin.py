@@ -109,6 +109,65 @@ def test_single_line_delete_still_runs_the_height_round_trip_in_node_fixture():
     assert json.loads(proc.stdout) == {"writes": 2, "height": 44, "lastLength": 1, "sendUpdates": 1}
 
 
+def _run_resize_boundary_fixture(*, value: str, last_length: int, offset_height: int, scroll_height: int):
+    node = shutil.which("node")
+    if not node:  # pragma: no cover
+        pytest.skip("node not available")
+    body = _autoresize_body()
+    harness = textwrap.dedent(
+        """
+        let _composerAutoResizeRaf = 0;
+        let _composerLastResizeValueLength = %(last_length)s;
+        let writes = 0, height = %(offset_height)s, repins = 0;
+        const msg = {
+          value: %(value)r,
+          get offsetHeight() { return height; },
+          scrollHeight: %(scroll_height)s,
+          style: {
+            set height(value) { writes += 1; height = value === 'auto' ? 44 : parseInt(value, 10); },
+            get height() { return height + 'px'; },
+          },
+        };
+        const messages = { scrollTop: 0 };
+        const $ = (id) => id === 'msg' ? msg : id === 'messages' ? messages : null;
+        function updateSendBtn() {}
+        function _repinMessagesAfterComposerResize() { repins += 1; }
+        %(autoresize)s
+        autoResize();
+        console.log(JSON.stringify({ writes, height, lastLength: _composerLastResizeValueLength, repins }));
+        """
+    ) % {
+        "last_length": last_length,
+        "offset_height": offset_height,
+        "scroll_height": scroll_height,
+        "value": value,
+        "autoresize": body,
+    }
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_newline_growth_keeps_full_resize_and_repin_path():
+    out = _run_resize_boundary_fixture(
+        value="a\nb",
+        last_length=1,
+        offset_height=44,
+        scroll_height=68,
+    )
+    assert out == {"writes": 2, "height": 68, "lastLength": 3, "repins": 1}
+
+
+def test_equal_length_replacement_keeps_full_resize_path():
+    out = _run_resize_boundary_fixture(
+        value="ab",
+        last_length=2,
+        offset_height=44,
+        scroll_height=44,
+    )
+    assert out == {"writes": 2, "height": 44, "lastLength": 2, "repins": 0}
+
+
 def _helper_body() -> str:
     start = UI_JS.find("function _repinMessagesAfterComposerResize(")
     assert start != -1, "the _repinMessagesAfterComposerResize helper must exist in ui.js"
