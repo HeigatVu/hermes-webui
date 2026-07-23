@@ -1395,8 +1395,8 @@ async function send(){
         _clearComposerAfterQueuedSelectionSend(S.session&&S.session.session_id);
         S.pendingFiles=[];renderTray();
         if(S.activeStreamId&&typeof cancelStream==='function'){
-          showToast(t('busy_interrupt_confirm'),2000);
-          await cancelStream('busy-interrupt');
+          if(await cancelStream('busy-interrupt')) showToast(t('busy_interrupt_confirm'),2000);
+          else showToast(t('cancel_failed'),null,'error');
         } else {
           showToast(`Queued: "${text.slice(0,40)}${text.length>40?'…':''}"`,2000);
         }
@@ -3774,16 +3774,38 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   // falls back to the full renderMd path — identical structure, just not
   // incremental. (#5455 WS2.1)
   const _anchorProseSmdCache = new Map();
-  function _anchorProseIncrementalNode(key, text){
+  function _finalizeAnchorProseIncrementalNode(st){
+    if(!st || !st.parser || st.finalized) return;
+    const body=st.node&&st.node.querySelector&&st.node.querySelector('.msg-body');
+    window.smd.parser_end(st.parser);
+    if(body){
+      if(typeof _smdMediaTailFlush === 'function') _smdMediaTailFlush(st.parser);
+      if(typeof _sanitizeSmdLinks === 'function') _sanitizeSmdLinks(body);
+      if(typeof enhanceMarkdownTables === 'function') enhanceMarkdownTables(body);
+    }
+    if(typeof _smdMediaTailClear === 'function') _smdMediaTailClear(st.parser);
+    if(typeof _smdClearParserIdentity === 'function') _smdClearParserIdentity(body, st.parser);
+    st.finalized = true;
+  }
+  function _anchorProseIncrementalNode(key, text, options){
     if(!window.smd || !key || typeof _safeSmdRenderer!=='function') return null;
+    const finalize=!!(options&&options.finalize);
     const value=String(text||'');
     const fade=typeof _shouldUseLiveProseFade==='function'&&_shouldUseLiveProseFade();
+    let st;
     try{
-      let st=_anchorProseSmdCache.get(key);
+      st=_anchorProseSmdCache.get(key);
       // Self-heal desyncs (edit/sanitize made the text no longer a pure append):
       // rebuild the parser+node from scratch, mirroring the _smdWrite guard.
       if(st && st.writtenText && !value.startsWith(st.writtenText)) st=null;
       if(st && st.fade!==fade) st=null;
+      if(st && st.finalized && st.writtenText!==value){
+        const body=st.node&&st.node.querySelector&&st.node.querySelector('.msg-body');
+        if(typeof _smdMediaTailClear === 'function') _smdMediaTailClear(st.parser);
+        if(typeof _smdClearParserIdentity === 'function') _smdClearParserIdentity(body, st.parser);
+        _anchorProseSmdCache.delete(key);
+        st=null;
+      }
       if(!st){
         const node=document.createElement('div');
         node.className='assistant-segment';
@@ -3811,9 +3833,17 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         window.smd.parser_write(st.parser,delta);
         st.writtenText=value;
       }
+      if(finalize){
+        _finalizeAnchorProseIncrementalNode(st);
+      }
       st.node.dataset.rawText=value;
       return st.node;
     }catch(_){
+      if(st){
+        const body=st.node&&st.node.querySelector&&st.node.querySelector('.msg-body');
+        if(typeof _smdMediaTailClear === 'function') _smdMediaTailClear(st.parser);
+        if(typeof _smdClearParserIdentity === 'function') _smdClearParserIdentity(body, st.parser);
+      }
       _anchorProseSmdCache.delete(key);
       return null;
     }
@@ -5589,7 +5619,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     source.addEventListener('approval',e=>{
       const d=JSON.parse(e.data);
       _applyToAnchor('approval',d,e);
-      showApprovalForSession(activeSid, d, 1);
+      showApprovalForSession(activeSid, d, d.pending_count || 1);
       playAttentionSound(_attentionSoundKey(activeSid,'approval',1));
       sendBrowserNotification('Approval required',d.description||'Tool approval needed',{sid:activeSid});
     });
@@ -6774,12 +6804,32 @@ function transcript(){
 }
 
 let _composerAutoResizeRaf=0;
+let _composerLastResizeValue='';
 function autoResize(){
   if(_composerAutoResizeRaf && typeof cancelAnimationFrame==='function'){
     cancelAnimationFrame(_composerAutoResizeRaf);
     _composerAutoResizeRaf=0;
   }
   const el=$('msg');
+  const _nextValue=String(el.value||'');
+  const _isAppendOnly=_nextValue.length>_composerLastResizeValue.length&&_nextValue.startsWith(_composerLastResizeValue);
+  const _fitsCurrentHeight=el.scrollHeight<=el.offsetHeight;
+  // Only a direct append at the natural one-row height can skip the height
+  // round trip. Replacements and an already-tall composer must remeasure so the
+  // textarea can shrink back to its natural height.
+  // Parse min-height with a STRICT finite-pixel check: getComputedStyle can
+  // return a non-px value (e.g. a percentage `min-height`) that parseFloat would
+  // read as a bogus pixel number (parseFloat("50%")===50), which would wrongly
+  // enable the fast path and leave the composer stuck tall. Reject anything that
+  // is not exactly "<number>px" so those cases fail closed to the full resize.
+  const _minHeightRaw=_isAppendOnly&&_fitsCurrentHeight?getComputedStyle(el).minHeight:'';
+  const _minHeight=/^(?:\d+(?:\.\d+)?|\.\d+)px$/.test(_minHeightRaw)?parseFloat(_minHeightRaw):NaN;
+  const _isAtMinimumHeight=Number.isFinite(_minHeight)&&el.offsetHeight<=Math.ceil(_minHeight)+1;
+  if(_isAppendOnly&&_fitsCurrentHeight&&_isAtMinimumHeight){
+    _composerLastResizeValue=_nextValue;
+    updateSendBtn();
+    return;
+  }
   const _prevComposerH=el.offsetHeight;
   // #5514: autoResize() momentarily sets the textarea to height:'auto' (collapses
   // a multi-row composer toward its 1-row min) before reading scrollHeight and
@@ -6804,6 +6854,7 @@ function autoResize(){
   const _prevScrollTop=_msgs?_msgs.scrollTop:0;
   el.style.height='auto';
   el.style.height=Math.min(el.scrollHeight,200)+'px';
+  _composerLastResizeValue=_nextValue;
   if(_msgs&&_msgs.scrollTop!==_prevScrollTop) _msgs.scrollTop=_prevScrollTop;
   updateSendBtn();
   // Genuine NET growth (a new row that keeps the composer taller than before)
@@ -7076,7 +7127,9 @@ function showApprovalCard(pending, pendingCount) {
   const counter = $("approvalCounter");
   if (counter) {
     if (pendingCount && pendingCount > 1) {
-      counter.textContent = "1 of " + pendingCount + " pending";
+      counter.textContent = (typeof t === "function")
+        ? t("approval_pending_count", pendingCount)
+        : ("1 of " + pendingCount + " pending");
       counter.style.display = "";
     } else {
       counter.style.display = "none";

@@ -76,9 +76,7 @@ graphify-out/
 # Dev-only lint tooling (ESLint runtime-error guard) — see TESTING.md
 node_modules/
 package-lock.json
-<<<<<<< HEAD
 docs/ui-ux/review-shots/
-=======
 
 # Codegraph cache
 .codegraph/
@@ -88,4 +86,7 @@ cache/
 
 # Local custom files / drafts
 SCHEDULE_FEATURE_DRAFT.md
->>>>>>> 3928bd40 (Configure local ignores and settings)
+
+# Python build metadata (never commit generated egg-info)
+*.egg-info/
+

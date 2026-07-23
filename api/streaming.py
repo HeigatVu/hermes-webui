@@ -71,6 +71,7 @@ from api.process_event_utils import (
     release_async_delegation_delivery,
     requeue_async_delegation_event,
     schedule_async_delegation_claim_retry,
+    stamp_message_source,
 )
 
 
@@ -5896,8 +5897,7 @@ def _merge_display_messages_after_agent_result(previous_display, previous_contex
         # exchange and then clear the pending prompt. Materialize the current
         # turn at the transcript boundary before the assistant/tool response.
         current_user_msg = {'role': 'user', 'content': msg_text}
-        if source and source != 'webui':
-            current_user_msg['_source'] = source
+        stamp_message_source(current_user_msg, source)
         insert_at = 0
         while insert_at < len(candidates) and _is_context_compression_marker(candidates[insert_at]):
             insert_at += 1
@@ -5958,8 +5958,7 @@ def _merge_display_messages_after_agent_result(previous_display, previous_contex
         ):
             display_msg = copy.deepcopy(msg)
             display_msg['content'] = msg_text
-            if source and source != 'webui':
-                display_msg['_source'] = source
+            stamp_message_source(display_msg, source)
         merged.append(copy.deepcopy(display_msg))
         if key is not None:
             seen.add(key)
@@ -6475,8 +6474,7 @@ def _materialize_pending_user_turn_before_error(session) -> bool:
         'timestamp': recovered_ts,
         '_recovered': True,
     }
-    if pending_source != 'webui':
-        recovered['_source'] = pending_source
+    stamp_message_source(recovered, pending_source)
     if pending_attachments:
         recovered['attachments'] = pending_attachments
     session.messages.append(recovered)
@@ -7808,14 +7806,10 @@ def _run_agent_streaming(
             try:
                 from api.route_approvals import (
                     submit_gateway_pending_mirror as _submit_pending_for_polling,
-                    reconcile_gateway_pending_mirror_locked as _reconcile_gateway_pending_mirror_locked,
-                    _approval_sse_notify_locked as _approval_sse_notify_locked,
-                    _lock as _approval_lock,
+                    retire_gateway_pending_mirror as _retire_gateway_pending_mirror,
                 )
                 def _cleanup_gateway_pending_mirror():
-                    with _approval_lock:
-                        head, total, _changed = _reconcile_gateway_pending_mirror_locked(session_id)
-                        _approval_sse_notify_locked(session_id, head, total)
+                    _retire_gateway_pending_mirror(session_id)
             except ImportError:
                 _submit_pending_for_polling = None
                 _cleanup_gateway_pending_mirror = None
@@ -7826,7 +7820,8 @@ def _run_agent_streaming(
             def _approval_notify_cb(approval_data):
                 if _submit_pending_for_polling is not None:
                     try:
-                        _submit_pending_for_polling(session_id, approval_data)
+                        head, total = _submit_pending_for_polling(session_id, approval_data)
+                        approval_data = {**(head or approval_data), "pending_count": total}
                     except Exception:
                         logger.warning("Failed to mirror approval into WebUI polling state", exc_info=True)
                 put('approval', approval_data)
@@ -8241,20 +8236,9 @@ def _run_agent_streaming(
                         if _has_blocking_approval(session_id):
                             p = None
                             with _approval_lock:
-                                _reconcile_gateway_pending_mirror_locked(session_id)
-                                queue = _approval_pending.get(session_id)
-                                if isinstance(queue, list):
-                                    p = dict(queue[0]) if queue else None
-                                elif queue:
-                                    p = dict(queue)
-                                if p is None:
-                                    gw_queue = _approval_gateway_queues.get(session_id) or []
-                                    if gw_queue:
-                                        raw = getattr(gw_queue[0], 'data', None) or {}
-                                        if raw:
-                                            p = dict(raw)
-                                        else:
-                                            logger.warning("Gateway queue entry for %s has no .data attribute", session_id)
+                                p, pending_count, _changed = _reconcile_gateway_pending_mirror_locked(session_id)
+                                if p:
+                                    p = {**p, "pending_count": pending_count}
                             if p:
                                 put('approval', p)
                     except ImportError:
@@ -11447,8 +11431,7 @@ def cancel_stream(stream_id: str) -> bool:
                                 'content': _pending_user,
                                 'timestamp': _recovered_ts,
                             }
-                            if _pending_source and _pending_source != 'webui':
-                                _user_turn['_source'] = _pending_source
+                            stamp_message_source(_user_turn, _pending_source)
                             if _pending_atts:
                                 _user_turn['attachments'] = _pending_atts
                             _msgs_for_recovery.append(_user_turn)
